@@ -5,13 +5,13 @@ from pathlib import Path
 import numpy as np
 
 from advantage_player.config.settings import GameCfg, load_config
+from advantage_player.ledger.lifecycle import baseline_of
 from advantage_player.marketdata.bars import Bar
 from advantage_player.marketdata.events import AggTrade, BookTicker, MarkPrice
 from advantage_player.marketdata.recorder import TickRecorder
 from advantage_player.sim.engine import GameEngine, SignalEvent
 from advantage_player.sim.fills import Costs, Leg, TradeResult
 from advantage_player.sim.replay import (
-    baseline_of,
     evaluate,
     kline_to_bar,
     replay_bars,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -21,6 +22,7 @@ class RateLimiter:
         }
     )
     used: dict[tuple[str, str], int] = field(default_factory=dict)
+    _last_update: float = field(default_factory=time.monotonic)
 
     def set_limits(self, rate_limits: list[Mapping[str, object]]) -> None:
         """Load limits from exchangeInfo['rateLimits']."""
@@ -36,6 +38,13 @@ class RateLimiter:
             kind = "REQUEST_WEIGHT" if m.group(1).lower() == "used-weight" else "ORDERS"
             key = (kind, f"{m.group(2)}{_UNIT[m.group(3).lower()]}")
             self.used[key] = int(value)
+            self._last_update = time.monotonic()
+
+    def decay(self) -> None:
+        """Forget usage after its window may have rolled (refreshed by the next response)."""
+        now = time.monotonic()
+        if now - self._last_update > 60:
+            self.used.clear()
 
     def headroom(self) -> float:
         """Smallest remaining fraction across all tracked limits (1.0 = untouched)."""

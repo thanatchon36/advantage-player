@@ -91,6 +91,12 @@ class BinanceRest:
         self.backoff_s = backoff_s
         self._http = client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
 
+    async def throttle(self, min_headroom: float = 0.2) -> None:
+        """Wait until rate-limit headroom recovers (the 1-minute weight window rolls over)."""
+        while self.limiter.headroom() < min_headroom:
+            await asyncio.sleep(1.0)
+            self.limiter.decay()
+
     @property
     def has_keys(self) -> bool:
         return bool(self._key and self._secret)

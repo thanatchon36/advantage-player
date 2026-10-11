@@ -22,6 +22,7 @@ from typing import Any
 import pyarrow.parquet as pq
 
 from advantage_player.exchange.rest import BinanceRest
+from advantage_player.ledger.lifecycle import baseline_of
 from advantage_player.ledger.stats import GameStats, benjamini_hochberg, compute_stats, passes
 from advantage_player.marketdata.bars import Bar, BarBuilder, tf_seconds
 from advantage_player.marketdata.events import AggTrade, BookTicker, Depth, MarketEvent, MarkPrice
@@ -54,6 +55,7 @@ async def fetch_klines(
     bars: list[Bar] = []
     cur = start_ms
     while cur < end_ms:
+        await rest.throttle()
         rows = await rest.public(
             "GET",
             "/fapi/v1/klines",
@@ -148,11 +150,6 @@ class GameEvaluation:
     oos: GameStats
     bh_significant: bool
     passed: bool
-
-
-def baseline_of(game_id: str) -> str:
-    strat, rest = game_id.split("|", 1)
-    return f"BASELINE_{strat}|{rest}"
 
 
 def evaluate(

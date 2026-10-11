@@ -146,6 +146,16 @@ class GameEngine:
             self.unfilled[gid] = self.unfilled.get(gid, 0) + 1
 
     # ---- bars ------------------------------------------------------------------------------
+    def warm(self, bar: Bar) -> None:
+        """Indicator warm-up from history (no signals, no trades)."""
+        key = (bar.symbol, _tf_name(bar.tf_s))
+        ser = self.series.get(key)
+        if ser is None:
+            ser = self.series[key] = SeriesState(bar.symbol, bar.tf_s, self.cfg.regime)
+        if ser.bars and bar.open_ms <= ser.bars[-1].open_ms:
+            return
+        ser.update(bar)
+
     def on_bar(self, bar: Bar) -> None:
         tf = _tf_name(bar.tf_s)
         if self.bar_mode:  # bar replay: this bar is the price path for open trades

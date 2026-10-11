@@ -32,6 +32,7 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 | 1 Skeleton, config, signed client, metadata, time sync | ✅ done | 29 passed (28 unit + 1 DEMO integration) |
 | 2 Market data (routed sharded WS), tick recorder, bar builder, table scanner | ✅ done | 50 passed (48 unit + 2 DEMO integration) |
 | 3 Strategies A/B/C + BASELINE, regime, fill simulator, engine, replay, ledger stats + BH | ✅ done | 81 passed (79 unit + 2 DEMO integration) |
+| 4 SHADOW runner, game lifecycle, persistence, research loop, `run` command | ✅ done | 98 passed (96 unit + 2 DEMO integration) |
 
 ## Integration tests (skip if no DEMO keys)
 - tests/integration/test_demo_metadata.py — time sync, exchangeInfo, brackets, fees (read-only)
@@ -65,14 +66,37 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 - `python -m advantage_player research --days 14 BTCUSDT ETHUSDT SOLUSDT` on DEMO klines:
   288 trades, 12 games, 0 PASS (C on BTC ≈ −3 R OOS: tiny VWAP targets vs fees).
 
+## Phase 4 notes
+- Tables: signals (every decision incl. NO_BET + reason), games, game_transitions, trades
+  (stage-tagged), ledger_stats, risk_events, equity, orders, algo_orders, fills, latency, kv.
+  Every row carries `env` → DEMO and LIVE ledgers are separate.
+- Trade stages: RESEARCH / SHADOW (sim while game in that status), BASELINE (control),
+  SIM_PROBE / SIM_LIVE (sim twin of a real game, never counted), PROBE / LIVE (real fills, Phase 5).
+- Promotion windows count only trades in the current stage since entering it; BH is applied
+  across all games in that stage at each evaluation (every 15 min).
+- Suspension applies to PROBE and LIVE games. Literal SPEC reading: a PROBE/LIVE game whose
+  symbol leaves the open tables is SUSPENDED (risk-reducing). Rolling-100 μ check needs n ≥ 100;
+  slippage check n ≥ 10; fee-share check n ≥ 20; CUSUM ref = stats at last promotion.
+- SUSPENDED → SHADOW automatically after `suspend_cooldown_h` (24 h), fresh window (new config key).
+- Go-live: `Lifecycle.seed_from(demo)` puts demo PROBE/LIVE games at PROBE in live, never LIVE.
+- RESEARCH loop (daily): 30 d kline replay for open+watch tables → walk-forward OOS → BH →
+  RESEARCH→SHADOW. Second-TF games (5s/15s) have no klines; they stay RESEARCH until tick
+  research is wired (see open issues).
+- Indicator warm-up: 2 d of 1m and 5 d of 5m klines per new table symbol.
+- `python -m advantage_player run` smoke test on DEMO (3 min): routed WS healthy, ~25k events,
+  research 5768 trades / 52 games / 0 pass.
+
 ## Open issues
-- None blocking.
+- Second-TF games (A@15s, B@5s/15s) can only leave RESEARCH via tick replay of recorded
+  Parquet; `replay_ticks` exists but the daily research loop only uses klines so far.
+- Table flapping (GRASSUSDT eligible → not, 70 s apart) causes WS resubscribe + table-change
+  noise; Telegram debounce in Phase 6.
 
 ## End-of-run instruction (from user)
 After final summary is written here and committed: stop any background processes I started
 (dev servers, bots, watchers), then run `pmset sleepnow`.
 
 ## Next step
-Phase 4: SHADOW runner (live hub → engine in tick mode), trades/signals/games persistence,
-game lifecycle RESEARCH → SHADOW → PROBE → LIVE → SUSPENDED (→ SHADOW), CUSUM / rolling-100 /
-slippage / fee-share suspension, kline backfill for warm-up, `run` command.
+Phase 5: bankroll/sizing (fractional Kelly on μ_low, dd multiplier, caps), derived leverage +
+liquidation guard, discipline rules §7 (each with a unit test), executor (algoOrder SL/TP,
+maker-first entry), user data stream, reconciliation, PROBE trade on DEMO.

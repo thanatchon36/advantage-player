@@ -74,6 +74,10 @@ ledger:
   cusum_k: 0.25
   cusum_h: 5.0
   walk_forward_train_frac: 0.6
+  research_days: 30            # kline history replayed for RESEARCH (minute TFs)
+  research_interval_h: 24
+  eval_interval_s: 900         # lifecycle promotion / suspension checks
+  suspend_cooldown_h: 24       # SUSPENDED → SHADOW (fresh window) after this
 
 risk:
   kelly_fraction: 0.25

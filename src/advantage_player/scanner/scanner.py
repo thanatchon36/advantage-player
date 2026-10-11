@@ -93,8 +93,7 @@ class TableScanner:
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         async with self._sem:
-            while self.rest.limiter.headroom() < self.cfg.discipline.min_rate_headroom:
-                await asyncio.sleep(1.0)  # let the 1-minute weight window roll over
+            await self.rest.throttle(self.cfg.discipline.min_rate_headroom)
             return await self.rest.public("GET", path, params)
 
     async def scan(self, now_ms: int | None = None) -> ScanResult:

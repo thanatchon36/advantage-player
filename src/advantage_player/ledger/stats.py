@@ -46,8 +46,8 @@ def p_value_positive(r: Sequence[float] | np.ndarray) -> float:
     x = _arr(r)
     if len(x) < 2:
         return 1.0
-    if float(x.std(ddof=1)) == 0:
-        return 0.0 if x.mean() > 0 else 1.0
+    if float(np.ptp(x)) == 0:  # constant sample: no variance to test against
+        return 0.0 if x[0] > 0 else 1.0
     return float(sps.ttest_1samp(x, 0.0, alternative="greater").pvalue)
 
 

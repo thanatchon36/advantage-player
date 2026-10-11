@@ -198,6 +198,31 @@ async def cmd_research(config_path: str, symbols: list[str], days: int) -> int:
     return 0
 
 
+async def cmd_run(config_path: str, seconds: int | None) -> int:
+    import signal
+
+    from advantage_player.app import Bot
+
+    secrets = Secrets()
+    bot = Bot(secrets, load_config(config_path))
+    print(f"=== MODE: {bot.banner} | config {bot.cfg.hash} ===")
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, bot.stopping.set)
+    await bot.start()
+    deadline = loop.time() + seconds if seconds else None
+    while not bot.stopping.is_set():
+        try:
+            await asyncio.wait_for(bot.stopping.wait(), timeout=60)
+        except TimeoutError:
+            print(bot.status(), flush=True)
+        if deadline and loop.time() >= deadline:
+            break
+    print(bot.status(), flush=True)
+    await bot.stop()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="advantage_player")
     p.add_argument("--config", default="config.yaml")
@@ -211,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("research", help="kline replay + walk-forward + BH (RESEARCH)")
     rp.add_argument("--days", type=int, default=14)
     rp.add_argument("symbols", nargs="*", default=["BTCUSDT", "ETHUSDT"])
+    runp = sub.add_parser("run", help="run the bot (SHADOW for all games; executes PROBE/LIVE)")
+    runp.add_argument("--seconds", type=int, default=None, help="stop after N seconds")
     args = p.parse_args(argv)
     setup_logging(args.log_level)
     if args.cmd == "info":
@@ -219,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(cmd_scan(args.config))
     if args.cmd == "stream":
         return asyncio.run(cmd_stream(args.config, args.seconds, args.symbols))
+    if args.cmd == "run":
+        return asyncio.run(cmd_run(args.config, args.seconds))
     if args.cmd == "research":
         return asyncio.run(cmd_research(args.config, args.symbols, args.days))
     return 1

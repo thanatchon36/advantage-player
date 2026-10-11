@@ -64,6 +64,8 @@ def make_engine(url: str) -> Engine:
             cur.execute("PRAGMA foreign_keys=ON")
             cur.close()
 
+    from advantage_player.storage import models  # noqa: F401  (registers tables)
+
     Base.metadata.create_all(engine)
     return engine
 

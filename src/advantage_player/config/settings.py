@@ -126,6 +126,10 @@ class LedgerCfg(_Strict):
     cusum_k: float = 0.25
     cusum_h: float = 5.0
     walk_forward_train_frac: float = 0.6
+    research_days: int = 30
+    research_interval_h: float = 24.0
+    eval_interval_s: int = 900
+    suspend_cooldown_h: float = 24.0
 
 
 class RiskCfg(_Strict):
