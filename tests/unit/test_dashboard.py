@@ -145,6 +145,8 @@ async def test_controls_only_reduce_risk(tmp_path: Path) -> None:
     assert bot.cfg.risk.max_risk_per_trade == 0.005 and bot.risk_scale == 0.5
     assert bot.discipline.state.manual_pause
     assert kv_get(bot.db, bot.env, "overrides") == {"risk.max_risk_per_trade": 0.005}
+    restarted = _bot(tmp_path)  # lowered risk survives a restart
+    assert restarted.risk_scale == 0.5 and restarted.cfg.risk.max_risk_per_trade == 0.005
 
 
 async def test_stale_control_requests_expire(tmp_path: Path) -> None:

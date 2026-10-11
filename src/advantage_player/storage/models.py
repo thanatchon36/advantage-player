@@ -1,11 +1,20 @@
-"""Persistent records (SPEC §8). All timestamps UTC. `env` separates DEMO and LIVE ledgers."""
+"""Persistent records (SPEC §8). All timestamps UTC. `env` separates DEMO and LIVE ledgers.
+Exchange ids are BigInteger: Binance ids exceed 32 bits (matters on Postgres)."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from advantage_player.storage.db import Base, utcnow
@@ -79,7 +88,7 @@ class TradeRow(Base):
     funding_usd: Mapped[float] = mapped_column(Float, default=0.0)
     mae_r: Mapped[float] = mapped_column(Float)
     mfe_r: Mapped[float] = mapped_column(Float)
-    hold_ms: Mapped[int] = mapped_column(Integer)
+    hold_ms: Mapped[int] = mapped_column(BigInteger)
     exit_reason: Mapped[str] = mapped_column(String(16))
     entry_maker: Mapped[bool] = mapped_column(Boolean)
     adverse_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -129,7 +138,7 @@ class OrderRow(Base):
     env: Mapped[str] = mapped_column(String(8), index=True)
     ts: Mapped[datetime] = mapped_column(TS, index=True, default=utcnow)
     client_id: Mapped[str] = mapped_column(String(40), unique=True)
-    order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     side: Mapped[str] = mapped_column(String(4))
     type: Mapped[str] = mapped_column(String(24))
@@ -147,7 +156,7 @@ class AlgoOrderRow(Base):
     env: Mapped[str] = mapped_column(String(8), index=True)
     ts: Mapped[datetime] = mapped_column(TS, index=True, default=utcnow)
     client_algo_id: Mapped[str] = mapped_column(String(40), unique=True)
-    algo_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    algo_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     side: Mapped[str] = mapped_column(String(4))
     type: Mapped[str] = mapped_column(String(24))
@@ -165,7 +174,7 @@ class FillRow(Base):
     ts: Mapped[datetime] = mapped_column(TS, index=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     client_id: Mapped[str] = mapped_column(String(40), index=True)
-    trade_id: Mapped[int] = mapped_column(Integer)
+    trade_id: Mapped[int] = mapped_column(BigInteger)
     side: Mapped[str] = mapped_column(String(4))
     price: Mapped[float] = mapped_column(Float)
     qty: Mapped[float] = mapped_column(Float)

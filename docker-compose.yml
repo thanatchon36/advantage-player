@@ -1,0 +1,51 @@
+# bot + dashboard + Postgres. Secrets come from .env (never baked into the image).
+# config.yaml is mounted read-only so pre-commitment (SPEC §7.8) still sees your edits.
+x-app: &app
+  build: .
+  image: advantage-player:latest
+  env_file: .env
+  environment:
+    STORAGE_URL: postgresql+psycopg://ap:${POSTGRES_PASSWORD:-ap}@db:5432/ap
+    DATA_DIR: /data
+  volumes:
+    - ./config.yaml:/app/config.yaml:ro
+    - ticks:/data
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ap
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ap}
+      POSTGRES_DB: ap
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ap -d ap"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  bot:
+    <<: *app
+    command: ["run"]
+    stop_grace_period: 60s   # SIGTERM: cancel pending entries, KEEP exchange-side SLs
+
+  dashboard:
+    <<: *app
+    command: ["dashboard"]
+    environment:
+      STORAGE_URL: postgresql+psycopg://ap:${POSTGRES_PASSWORD:-ap}@db:5432/ap
+      DATA_DIR: /data
+      DASHBOARD_HOST: 0.0.0.0   # inside the container; published on host localhost only
+      DASHBOARD_PORT: 8080
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8080}:8080"
+
+volumes:
+  pgdata:
+  ticks:

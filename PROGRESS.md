@@ -36,6 +36,7 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 | 5 Sizing, derived leverage, caps, discipline §7, executor, UDS, reconciliation, PROBE on DEMO | ✅ done | 147 passed (144 unit + 3 DEMO integration) |
 | 6 Telegram: throttled non-blocking alerts, debounced tables, daily report, chat-gated commands | ✅ done | 155 passed (152 unit + 3 DEMO integration) |
 | 7 Dashboard: FastAPI + WS push, password auth, 6 views, risk-reducing control queue, CSV | ✅ done | 163 passed (160 unit + 3 DEMO integration) |
+| 8 Docker (bot + dashboard + Postgres), uvloop, README, go-live checklist | ✅ done | 165 passed (161 unit + 3 DEMO integration + 1 Postgres) |
 
 ## Integration tests (skip if no DEMO keys)
 - tests/integration/test_demo_metadata.py — time sync, exchangeInfo, brackets, fees (read-only)
@@ -146,6 +147,20 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
   all times shown Asia/Bangkok. Smoke-checked in headless Chrome against a live DEMO run:
   all 6 tabs render, no JS errors, a control round-tripped through the running bot.
 
+## Phase 8 notes
+- Dockerfile: python:3.12-slim + uv 0.13.0, `uv sync --frozen --no-dev`, non-root user, uvloop on Linux
+  (CLI picks uvloop when importable; macOS keeps the default loop). docker-compose: db (postgres:16),
+  bot (`run`, stop_grace_period 60 s), dashboard (`dashboard`, published on 127.0.0.1 only);
+  config.yaml mounted read-only; secrets via env_file .env (never in the image).
+- `STORAGE_URL` / `DATA_DIR` env override config storage (used by compose). Driver: psycopg 3.
+- Postgres fixes: exchange ids / hold_ms → BigInteger (Binance ids exceed int32); free-text
+  `signals.reason`, `trades.tag`, transition reason truncated to column length (Postgres enforces it).
+- BUG FIXED (found by the Postgres test, affected SQLite too): `/risk scale` and dashboard risk_scale
+  were not persisted, so a restart silently restored scale 1.0 (a risk increase). `Bot.risk_scale` is
+  now a property that writes kv on every set; regression test in test_dashboard.py.
+- Verified: `docker compose up` on DEMO → bot RUNNING, market + user WS healthy, dashboard served
+  from Postgres (457 table rows); `docker compose stop bot` takes the graceful SIGTERM path.
+
 ## Open issues
 - Second-TF games (A@15s, B@5s/15s) can only leave RESEARCH via tick replay of recorded
   Parquet; `replay_ticks` exists but the daily research loop only uses klines so far.
@@ -156,8 +171,39 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 After final summary is written here and committed: stop any background processes I started
 (dev servers, bots, watchers), then run `pmset sleepnow`.
 
-## Next step
-Phase 8: Dockerfile + docker-compose (bot, dashboard, postgres), README (setup, demo key
-creation, API permissions: futures ON, withdrawals OFF, IP whitelist, universal transfer only if
-auto-sweep; keep most capital outside futures wallet; go-live checklist + gate), final summary,
-then stop background processes and run `pmset sleepnow` (user instruction).
+## Pending decisions for the user (risk-relevant; not changed without asking)
+1. After a 10 % hard kill, `/resume` (≥ 12 h) does NOT reset the equity peak → entries stay blocked
+   while drawdown ≥ 10 %. Alternative: re-baseline the peak on resume.
+2. `Lifecycle.seed_from(demo)` (demo PROBE/LIVE games start at PROBE in live, SPEC §12) is implemented +
+   unit-tested but not wired to any command. Today a live env starts every game at RESEARCH (stricter).
+
+## FINAL SUMMARY (all 8 phases done, 2026-10-12)
+What works (DEMO-verified):
+- Signed REST client (time sync, weights, backoff, idempotent ids), exchange metadata/brackets/fees.
+- Routed, sharded market WS + Parquet tick recorder + local bar builder; universe scanner every 15 min
+  with move_to_cost scoring, eligibility filters, correlation clusters.
+- Strategies A/B/C + BASELINE controls, regimes, conservative fill simulator, kline replay with
+  walk-forward OOS, edge ledger (bootstrap μ_low, p, Δ-vs-baseline, BH q=0.10).
+- Lifecycle RESEARCH→SHADOW→PROBE→LIVE→SUSPENDED with CUSUM / rolling-μ / slippage / fee-share checks.
+- Fractional-Kelly sizing on μ_low, derived leverage + liquidation guard, all portfolio caps, all 11
+  SPEC §7 discipline rules (each unit-tested), executor with exchange-side SL via algoOrder confirmed
+  ≤ 2 s, make-before-break SL moves, user data stream, REST reconciliation, orphan handling.
+- Telegram alerts / daily report / chat-gated risk-reducing commands.
+- Dashboard (6 views, WS push, password auth, risk-reducing control queue, CSV export, Bangkok time).
+- Docker compose (bot + dashboard + Postgres) and native macOS (uv).
+Tests: 165 passed = 161 unit (incl. hypothesis property tests) + 3 DEMO integration (metadata,
+streams, real PROBE order flow on BTCUSDT) + 1 Postgres storage test.
+Skipped when prerequisites are missing: the 3 DEMO tests (no keys or AP_SKIP_INTEGRATION=1) and
+test_postgres_storage.py (no AP_TEST_PG_URL).
+Research status: 52 games evaluated on DEMO klines, 0 PASS → the bot correctly does not bet.
+Go-live gate NOT met yet (needs ≥ 1 game passing PROBE on DEMO + ≥ 2 weeks clean running).
+
+Exact steps to run on DEMO:
+1. `cp .env.example .env && chmod 600 .env` → fill BINANCE_DEMO_API_KEY/SECRET (Futures ON,
+   Withdrawals OFF, IP whitelist), TELEGRAM_*, DASHBOARD_PASSWORD; keep BINANCE_ENV=demo.
+2. Native: `uv sync && uv run python -m advantage_player info` (expect DEMO banner), then
+   `uv run python -m advantage_player run --dashboard` → http://127.0.0.1:8080.
+   Docker: `docker compose up -d --build` → http://127.0.0.1:8080, logs `docker compose logs -f bot`.
+3. Let it run ≥ 2 weeks; watch Discipline log / risk_events for sl_failure / orphan / flatten.
+4. Tests: `uv run ruff check . && uv run mypy src tests && uv run pytest -q` (stop the bot first —
+   DEMO integration tests trade BTCUSDT on the same account).

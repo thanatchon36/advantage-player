@@ -42,7 +42,7 @@ class Journal:
                     side=side,
                     status=status,
                     decision=decision,
-                    reason=reason,
+                    reason=reason[:64],  # Postgres enforces VARCHAR length
                     detail=detail or {},
                 )
             )
@@ -68,7 +68,7 @@ class Journal:
             game_id=r.game_id,
             symbol=r.symbol,
             side=r.side,
-            tag=r.tag,
+            tag=r.tag[:64],
             signal_ts=ms_to_dt(r.signal_ms),
             entry_ts=ms_to_dt(r.entry_ms),
             exit_ts=ms_to_dt(r.exit_ms),

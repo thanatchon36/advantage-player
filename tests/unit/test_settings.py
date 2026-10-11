@@ -75,3 +75,14 @@ def test_config_hash_changes_with_content() -> None:
 def test_unknown_config_key_rejected() -> None:
     with pytest.raises(ValidationError):
         AppConfig.model_validate({"risk": {"max_risk_per_trade": 0.01, "typo_key": 1}})
+
+
+def test_storage_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STORAGE_URL", "postgresql+psycopg://ap:ap@db:5432/ap")
+    monkeypatch.setenv("DATA_DIR", "/data")
+    cfg = load_config("config.yaml")
+    assert cfg.storage.url == "postgresql+psycopg://ap:ap@db:5432/ap"
+    assert cfg.storage.data_dir == "/data"
+    monkeypatch.delenv("STORAGE_URL")
+    monkeypatch.delenv("DATA_DIR")
+    assert load_config("config.yaml").storage.url.startswith("sqlite:///")

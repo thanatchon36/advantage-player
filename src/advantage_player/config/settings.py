@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -198,5 +199,10 @@ class AppConfig(_Strict):
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
+    """STORAGE_URL / DATA_DIR env vars override `storage` (Docker points it at Postgres)."""
     data = yaml.safe_load(Path(path).read_text()) or {}
+    storage = data.setdefault("storage", {})
+    for env_key, field in (("STORAGE_URL", "url"), ("DATA_DIR", "data_dir")):
+        if os.environ.get(env_key):
+            storage[field] = os.environ[env_key]
     return AppConfig.model_validate(data)

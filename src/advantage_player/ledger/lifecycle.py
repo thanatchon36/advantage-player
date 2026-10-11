@@ -148,7 +148,7 @@ class Lifecycle:
                     ts=now,
                     from_status=t.from_status,
                     to_status=to,
-                    reason=reason,
+                    reason=reason[:256],
                 )
             )
             s.commit()

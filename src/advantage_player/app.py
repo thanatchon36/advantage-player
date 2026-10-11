@@ -107,7 +107,7 @@ class Bot:
         self.discipline = Discipline(
             cfg.discipline, DisciplineState.from_json(kv_get(self.db, self.env, "discipline"))
         )
-        self.risk_scale = float(kv_get(self.db, self.env, "risk_scale", 1.0))
+        self._risk_scale = float(kv_get(self.db, self.env, "risk_scale", 1.0))
         self.overrides: dict[str, Any] = dict(kv_get(self.db, self.env, "overrides", {}) or {})
         pend = [Pending(**p) for p in kv_get(self.db, self.env, "config_pending", []) or []]
         if self.overrides:
@@ -141,6 +141,16 @@ class Bot:
     @property
     def banner(self) -> str:
         return self.secrets.banner
+
+    @property
+    def risk_scale(self) -> float:
+        return self._risk_scale
+
+    @risk_scale.setter
+    def risk_scale(self, value: float) -> None:
+        """Persisted at once: a restart must never undo a lowered risk scale."""
+        self._risk_scale = value
+        kv_set(self.db, self.env, "risk_scale", value)
 
     def costs_for(self, symbol: str) -> Costs:
         f = self.meta.fees.get(symbol)

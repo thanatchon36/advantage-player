@@ -265,8 +265,7 @@ def discipline(db: Engine, env: str, hours: int = 24) -> dict[str, Any]:
             select(ConfigVersion).order_by(ConfigVersion.id.desc()).limit(20)
         ).all()
         ev = [
-            {"ts": ms(e.ts), "kind": e.kind, "symbol": e.symbol, "detail": e.detail}
-            for e in events
+            {"ts": ms(e.ts), "kind": e.kind, "symbol": e.symbol, "detail": e.detail} for e in events
         ]
         cv = [{"ts": ms(v.created_at), "hash": v.hash, "note": v.note} for v in versions]
     return {

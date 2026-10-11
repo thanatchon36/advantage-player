@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from collections.abc import Coroutine
+from typing import Any
 
 from advantage_player.config.settings import Secrets, load_config
 from advantage_player.exchange.endpoints import ENDPOINTS
@@ -245,9 +247,7 @@ async def cmd_run(config_path: str, seconds: int | None, dashboard: bool = False
         from advantage_player.dashboard.server import serve
 
         dash = asyncio.create_task(
-            serve(
-                bot.db, bot.env, pw, secrets.dashboard_host, secrets.dashboard_port, bot.stopping
-            )
+            serve(bot.db, bot.env, pw, secrets.dashboard_host, secrets.dashboard_port, bot.stopping)
         )
         print(f"dashboard on http://{secrets.dashboard_host}:{secrets.dashboard_port}")
     deadline = loop.time() + seconds if seconds else None
@@ -263,6 +263,15 @@ async def cmd_run(config_path: str, seconds: int | None, dashboard: bool = False
     if dash is not None:
         await dash
     return 0
+
+
+def _run(coro: Coroutine[Any, Any, int]) -> int:
+    """uvloop on Linux (SPEC §2); the default asyncio loop elsewhere (macOS dev)."""
+    try:
+        import uvloop
+    except ImportError:
+        return asyncio.run(coro)
+    return asyncio.run(coro, loop_factory=uvloop.new_event_loop)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -285,17 +294,17 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     setup_logging(args.log_level)
     if args.cmd == "info":
-        return asyncio.run(cmd_info(args.config))
+        return _run(cmd_info(args.config))
     if args.cmd == "scan":
-        return asyncio.run(cmd_scan(args.config))
+        return _run(cmd_scan(args.config))
     if args.cmd == "stream":
-        return asyncio.run(cmd_stream(args.config, args.seconds, args.symbols))
+        return _run(cmd_stream(args.config, args.seconds, args.symbols))
     if args.cmd == "run":
-        return asyncio.run(cmd_run(args.config, args.seconds, args.dashboard))
+        return _run(cmd_run(args.config, args.seconds, args.dashboard))
     if args.cmd == "dashboard":
-        return asyncio.run(cmd_dashboard(args.config))
+        return _run(cmd_dashboard(args.config))
     if args.cmd == "research":
-        return asyncio.run(cmd_research(args.config, args.symbols, args.days))
+        return _run(cmd_research(args.config, args.symbols, args.days))
     return 1
 
 
