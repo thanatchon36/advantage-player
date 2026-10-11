@@ -1,0 +1,117 @@
+# Advantage Player — runtime config. Defaults mirror SPEC.md.
+# Risk-INCREASING edits are queued 24 h (and rejected while drawdown > 5%); see SPEC §7.8.
+
+target_leverage: 50            # cap; effective leverage is derived per trade (SPEC §6)
+
+universe:
+  scan_interval_s: 900
+  quote_asset: USDT
+  min_listing_days: 30
+  min_quote_volume_usd: 50000000
+  min_depth_usd_10bps: 250000
+  max_tick_bps: 2.0
+  min_move_to_cost: 5.0
+  max_abs_funding: 0.0005      # 0.05% per interval
+  anomaly_lookback_min: 60
+  open_tables: 8
+  watchlist: 12
+  cluster_corr: 0.7
+  cluster_lookback_days: 7
+  slippage_model_bps: 1.0
+  table_change_debounce_s: 1800
+
+regime:
+  ema_fast: 20
+  ema_slow: 50
+  trend_slope_bps: 2.0         # |EMA20 slope| per bar, in bps of price
+  high_vol_pctile: 90
+  high_vol_lookback_days: 30
+  allow_high_vol: false
+
+games:
+  A_trend_pullback:
+    enabled: true
+    timeframes: ["15s", "1m", "5m"]
+    regimes: [TREND]
+    zone_atr: 0.3
+    vol_z: 1.5
+    stop_atr_buffer: 0.2
+    tp1_r: 1.5
+    tp1_fraction: 0.5
+    tp2_r: 2.5
+    trail_atr: 1.0
+    time_stop_bars: 30
+    entry: taker
+  B_order_flow:
+    enabled: true
+    timeframes: ["5s", "15s"]
+    regimes: [TREND, RANGE]
+    imbalance: 0.7
+    persist_s: 3.0
+    stop_atr: 1.0
+    tp_r: 1.0
+    time_stop_bars: 20
+    entry: maker
+  C_range_fade:
+    enabled: true
+    timeframes: ["1m", "5m"]
+    regimes: [RANGE]
+    band_sigma: 2.0
+    stop_atr_buffer: 0.2
+    time_stop_bars: 30
+    entry: taker
+
+ledger:
+  bootstrap_samples: 5000
+  confidence: 0.95
+  bh_q: 0.10
+  shadow_min_n: 200
+  probe_min_n: 100
+  probe_max_slippage_ratio: 1.5
+  suspend_slippage_ratio: 2.0
+  suspend_fee_share: 0.5
+  rolling_window: 100
+  cusum_k: 0.25
+  cusum_h: 5.0
+  walk_forward_train_frac: 0.6
+
+risk:
+  kelly_fraction: 0.25
+  max_risk_per_trade: 0.01
+  probe_risk: 0.001
+  dd_half_at: 0.05
+  dd_halt_at: 0.10
+  liq_stop_fraction: 0.6
+  fee_buffer: 0.002
+  max_margin_frac: 0.05
+  max_total_open_risk: 0.03
+  max_cluster_risk: 0.015
+  max_net_direction_risk: 0.02
+  max_positions: 4
+  daily_loss_limit: 0.03
+  sweep_trigger: 1.20
+  auto_sweep: false
+
+discipline:
+  sl_confirm_timeout_s: 2.0
+  symbol_lock_after_stop_min: 15
+  loss_streak_pause_n: 4
+  loss_streak_pause_min: 30
+  kill_resume_min_hours: 12
+  config_increase_delay_h: 24
+  config_reject_dd: 0.05
+  max_spread_bps: 5.0
+  funding_blackout_min: 5
+  max_clock_drift_ms: 500
+  min_rate_headroom: 0.2
+  stale_data_s: 5.0
+
+execution:
+  maker_timeout_s: 5.0
+  max_taker_slippage_bps: 3.0
+  reconcile_interval_s: 30
+  recv_window_ms: 5000
+
+storage:
+  url: "sqlite:///data/advantage_player.db"
+  data_dir: "data"
