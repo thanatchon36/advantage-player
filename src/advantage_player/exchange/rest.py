@@ -91,6 +91,10 @@ class BinanceRest:
         self.backoff_s = backoff_s
         self._http = client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
 
+    @property
+    def has_keys(self) -> bool:
+        return bool(self._key and self._secret)
+
     async def aclose(self) -> None:
         await self._http.aclose()
 

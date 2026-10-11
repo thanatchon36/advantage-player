@@ -11,7 +11,7 @@ from typing import Any
 import structlog
 
 from advantage_player.exchange.models import Fees, LeverageBrackets, SymbolInfo
-from advantage_player.exchange.rest import BinanceRest
+from advantage_player.exchange.rest import BinanceAPIError, BinanceRest
 
 log = structlog.get_logger(__name__)
 DAY_MS = 86_400_000
@@ -39,7 +39,12 @@ class ExchangeMetadata:
 
     async def refresh_fees(self, symbols: list[str]) -> None:
         for sym in symbols:
-            d = await self.rest.signed("GET", "/fapi/v1/commissionRate", {"symbol": sym})
+            try:
+                d = await self.rest.signed("GET", "/fapi/v1/commissionRate", {"symbol": sym})
+            except BinanceAPIError as e:
+                # DEMO returns HTTP 500 for some symbols; callers fall back to conservative fees
+                log.warning("commission_rate_failed", symbol=sym, error=str(e))
+                continue
             self.fees[sym] = Fees(
                 symbol=sym,
                 maker=float(d["makerCommissionRate"]),

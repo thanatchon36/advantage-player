@@ -6,7 +6,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Engine, String, create_engine, event, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Engine,
+    Float,
+    String,
+    create_engine,
+    event,
+    select,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 
@@ -25,6 +35,19 @@ class ConfigVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     config: Mapped[dict[str, Any]] = mapped_column(JSON)
     note: Mapped[str] = mapped_column(String(256), default="")
+
+
+class TableSnapshot(Base):
+    __tablename__ = "table_snapshots"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(8))  # open | watch | none
+    score: Mapped[float] = mapped_column(Float)
+    eligible: Mapped[bool] = mapped_column(Boolean)
+    reasons: Mapped[list[str]] = mapped_column(JSON)
+    cluster: Mapped[int] = mapped_column(default=-1)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
 def make_engine(url: str) -> Engine:
