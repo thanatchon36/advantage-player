@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Advantage Player</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#2a2f3a;--fg:#e6e6e6;--mute:#8b93a3;
+--good:#3fb37f;--bad:#e5534b;--warn:#d4a72c;--accent:#4c8dff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 system-ui,-apple-system,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);
+padding:10px 16px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
+.mode{font-weight:700;padding:2px 8px;border-radius:4px;background:#24324d}
+.mode.live{background:var(--bad);color:#fff}
+.kv{display:flex;flex-direction:column}.kv b{font-size:14px}.kv span{color:var(--mute);font-size:11px}
+nav{display:flex;gap:4px;padding:8px 16px;border-bottom:1px solid var(--line);overflow-x:auto}
+nav button{background:none;border:1px solid transparent;color:var(--mute);padding:6px 12px;border-radius:6px;
+cursor:pointer;font:inherit}
+nav button.on{color:var(--fg);border-color:var(--line);background:var(--panel)}
+main{padding:16px;max-width:1500px;margin:0 auto}
+section{display:none}section.on{display:block}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;min-width:0}
+.card h3{margin:0 0 8px;font-size:13px;color:var(--mute);font-weight:600}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{color:var(--mute);font-weight:600;cursor:pointer;user-select:none;position:sticky;top:0;background:var(--panel)}
+th:first-child,td:first-child{text-align:left}
+tr.click{cursor:pointer}tr.click:hover td{background:#1e222b}
+.pos{color:var(--good)}.neg{color:var(--bad)}.mute{color:var(--mute)}.warn{color:var(--warn)}
+.tag{display:inline-block;padding:0 6px;border-radius:3px;font-size:11px;background:#262b36}
+.tag.LIVE{background:var(--good);color:#000}.tag.PROBE{background:var(--accent);color:#fff}
+.tag.SUSPENDED{background:var(--bad);color:#fff}.tag.open{background:var(--good);color:#000}
+.chart{height:300px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+button.act,select,input{font:inherit;background:#1f2430;color:var(--fg);border:1px solid var(--line);
+border-radius:6px;padding:5px 10px}
+button.act{cursor:pointer}button.danger{border-color:var(--bad);color:var(--bad)}
+.bar{display:flex;align-items:center;gap:6px}.bar i{display:block;height:8px;background:var(--accent);border-radius:2px}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;max-width:420px}
+dialog::backdrop{background:#0009}
+.offline{background:var(--bad);color:#fff;padding:6px 16px;display:none}
+svg text{fill:var(--mute);font-size:10px}
+@media (max-width:600px){main{padding:8px}.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="offline" id="offline">Bot snapshot is stale — the bot may be stopped. Data shown may be old.</div>
+<header id="hdr"><span class="mode" id="mode">…</span></header>
+<nav id="nav"></nav>
+<main>
+<section id="floor"><div class="card"><h3>Casino floor — table ranking <span id="scan-ts" class="mute"></span></h3>
+<div class="scroll"><table id="t-floor"></table></div></div></section>
+
+<section id="ledger"><div class="card"><h3>Edge ledger (click a game)</h3>
+<div class="scroll"><table id="t-ledger"></table></div></div>
+<div class="grid" style="margin-top:16px">
+<div class="card"><h3 id="g-title">Game equity curve (cumulative R)</h3><div id="c-game" class="chart"></div></div>
+<div class="card"><h3>R histogram</h3><div id="h-game"></div></div>
+<div class="card"><h3>Status history</h3><div class="scroll"><table id="t-ghist"></table></div></div>
+</div></section>
+
+<section id="bankroll"><div class="grid">
+<div class="card"><h3>Equity (USDT) · sweep baseline dashed</h3><div id="c-eq" class="chart"></div></div>
+<div class="card"><h3>Drawdown from peak (%)</h3><div id="c-dd" class="chart"></div></div>
+<div class="card"><h3>Exposure</h3><div id="exposure"></div></div>
+</div></section>
+
+<section id="live"><div class="row"><select id="sym"></select>
+<span class="mute">1m bars · lines: entry / SL / TP / liquidation · times in Bangkok</span></div>
+<div class="card"><div id="c-price" class="chart" style="height:420px"></div></div>
+<div class="grid" style="margin-top:16px" id="cards"></div></section>
+
+<section id="behavior"><div class="row">
+<select id="scope"><option value="real">real trades (PROBE/LIVE)</option><option value="shadow">SHADOW (simulated)</option></select>
+<span id="beh-sum" class="mute"></span></div>
+<div class="grid" id="beh"></div></section>
+
+<section id="discipline"><div class="grid">
+<div class="card"><h3>Controls (risk-reducing only)</h3>
+<div class="row"><button class="act" data-c="pause">Pause entries</button>
+<button class="act danger" data-c="kill">KILL (flatten + halt)</button></div>
+<div class="row"><input id="close-sym" placeholder="SYMBOL or all" size="12"><button class="act" data-c="close">Close</button></div>
+<div class="row"><input id="scale" type="number" step="0.05" min="0" max="1" placeholder="0..current" style="width:110px">
+<button class="act" data-c="risk_scale">Lower risk scale</button></div>
+<div class="row"><input id="lpath" placeholder="risk.max_risk_per_trade" size="24"><input id="lval" placeholder="lower value" size="10">
+<button class="act" data-c="lower">Lower setting</button></div>
+<div class="mute">Increases are impossible here by design (rule 9); edit config.yaml (24 h pre-commitment).</div>
+<h3 style="margin-top:12px">Recent requests</h3><div class="scroll"><table id="t-ctl"></table></div></div>
+<div class="card"><h3>NO_BET reasons (last 24 h)</h3><div id="nobet"></div></div>
+<div class="card"><h3>Queued config changes</h3><div class="scroll"><table id="t-pend"></table></div>
+<h3 style="margin-top:12px">Config versions</h3><div class="scroll"><table id="t-cfg"></table></div></div>
+<div class="card" style="grid-column:1/-1"><h3>Vetoes &amp; risk events</h3><div class="scroll" style="max-height:420px"><table id="t-risk"></table></div></div>
+<div class="card"><h3>CSV export (last 30 days)</h3><div class="row" id="exports"></div></div>
+</div></section>
+</main>
+
+<dialog id="dlg"><p id="dlg-msg"></p><div class="row" style="justify-content:flex-end">
+<button class="act" id="dlg-no">Cancel</button><button class="act danger" id="dlg-yes">Confirm</button></div></dialog>
+
+<script>
+"use strict";
+const BKK_S = 7 * 3600;  // Asia/Bangkok has no DST
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const bkk = ms => ms == null ? "—" : new Date(ms).toLocaleString("en-GB", {timeZone: "Asia/Bangkok", hour12: false}) + " BKK";
+const num = (x, d = 2) => x == null || Number.isNaN(x) ? "—" : Number(x).toFixed(d);
+const pct = (x, d = 2) => x == null ? "—" : (100 * x).toFixed(d) + "%";
+const sgn = (x, d = 2) => x == null ? "—" : `<span class="${x > 0 ? "pos" : x < 0 ? "neg" : ""}">${x > 0 ? "+" : ""}${Number(x).toFixed(d)}</span>`;
+const usd = x => x == null ? "—" : Number(x).toLocaleString("en-US", {maximumFractionDigits: 2});
+const api = async (p, opt) => { const r = await fetch(p, opt); if (r.status === 401) location.reload(); return r.json(); };
+const lcTime = ms => Math.floor(ms / 1000) + BKK_S;
+
+// ---- sortable tables -------------------------------------------------------------------------
+const sortState = {};
+function table(id, cols, rows, onClick) {
+  const st = sortState[id];
+  if (st) rows = [...rows].sort((a, b) => {
+    const x = a[st.k], y = b[st.k];
+    if (x == null) return 1; if (y == null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * st.dir;
+  });
+  const el = $(id);
+  el.innerHTML = "<thead><tr>" + cols.map(c => `<th data-k="${c.k}">${c.t}${st && st.k === c.k ? (st.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("") + "</tr></thead><tbody>" +
+    rows.map((r, i) => `<tr data-i="${i}" class="${onClick ? "click" : ""}">` + cols.map(c => `<td>${c.f ? c.f(r[c.k], r) : esc(r[c.k])}</td>`).join("") + "</tr>").join("") + "</tbody>";
+  el.querySelectorAll("th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k, cur = sortState[id];
+    sortState[id] = {k, dir: cur && cur.k === k ? -cur.dir : -1};
+    table(id, cols, rows, onClick);
+  });
+  if (onClick) el.querySelectorAll("tbody tr").forEach(tr => tr.onclick = () => onClick(rows[+tr.dataset.i]));
+}
+
+// ---- tiny SVG charts (histograms / bars / scatter) --------------------------------------------
+function histogram(el, values, bins = 20, unit = "") {
+  if (!values.length) { el.innerHTML = '<p class="mute">no data</p>'; return; }
+  const lo = Math.min(...values), hi = Math.max(...values), w = (hi - lo) / bins || 1;
+  const counts = Array(bins).fill(0);
+  values.forEach(v => counts[Math.min(bins - 1, Math.floor((v - lo) / w))]++);
+  const W = 360, H = 160, m = Math.max(...counts), bw = W / bins;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H + 16}" width="100%">` + counts.map((c, i) => {
+    const x0 = lo + i * w, h = (c / m) * H;
+    return `<rect x="${i * bw + 1}" y="${H - h}" width="${bw - 2}" height="${h}" fill="${x0 + w / 2 < 0 ? "var(--bad)" : "var(--good)"}"><title>${x0.toFixed(2)}…${(x0 + w).toFixed(2)}${unit}: ${c}</title></rect>`;
+  }).join("") + `<text x="0" y="${H + 12}">${lo.toFixed(2)}${unit}</text><text x="${W}" y="${H + 12}" text-anchor="end">${hi.toFixed(2)}${unit}</text></svg>`;
+}
+function bars(el, obj, key = "r") {
+  const rows = Object.entries(obj).sort((a, b) => b[1][key] - a[1][key]);
+  if (!rows.length) { el.innerHTML = '<p class="mute">no data</p>'; return; }
+  const m = Math.max(...rows.map(([, v]) => Math.abs(v[key]))) || 1;
+  el.innerHTML = "<table>" + rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="mute">n ${v.n}</td><td>${sgn(v[key])}R</td><td>${sgn(v.usd)}$</td>
+    <td style="width:40%"><div class="bar"><i style="width:${(Math.abs(v[key]) / m) * 100}%;background:${v[key] < 0 ? "var(--bad)" : "var(--good)"}"></i></div></td></tr>`).join("") + "</table>";
+}
+function scatter(el, pts) {
+  if (!pts.length) { el.innerHTML = '<p class="mute">no data</p>'; return; }
+  const W = 360, H = 220, xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const x0 = Math.min(...xs, 0), x1 = Math.max(...xs, 0.1), y0 = Math.min(...ys, 0), y1 = Math.max(...ys, 0.1);
+  const sx = x => ((x - x0) / (x1 - x0)) * (W - 20) + 10, sy = y => H - ((y - y0) / (y1 - y0)) * (H - 20) - 10;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%"><line x1="${sx(0)}" x2="${sx(0)}" y1="0" y2="${H}" stroke="var(--line)"/><line y1="${sy(0)}" y2="${sy(0)}" x1="0" x2="${W}" stroke="var(--line)"/>` +
+    pts.map(p => `<circle cx="${sx(p[0])}" cy="${sy(p[1])}" r="3" fill="${p[2] < 0 ? "var(--bad)" : "var(--good)"}" opacity=".7"><title>MAE ${p[0].toFixed(2)}R MFE ${p[1].toFixed(2)}R → ${p[2].toFixed(2)}R</title></circle>`).join("") +
+    `<text x="${W - 4}" y="${sy(0) - 4}" text-anchor="end">MAE R →</text><text x="${sx(0) + 4}" y="10">MFE R ↑</text></svg>`;
+}
+
+// ---- lightweight-charts helpers --------------------------------------------------------------
+const charts = {};
+function lc(id) {
+  if (charts[id]) return charts[id];
+  const el = $(id);
+  const c = LightweightCharts.createChart(el, {autoSize: true, layout: {background: {color: "transparent"}, textColor: "#8b93a3"},
+    grid: {vertLines: {color: "#222631"}, horzLines: {color: "#222631"}}, timeScale: {timeVisible: true, secondsVisible: false},
+    rightPriceScale: {borderColor: "#2a2f3a"}});
+  return charts[id] = {chart: c, series: []};
+}
+function resetSeries(h) { h.series.forEach(s => h.chart.removeSeries(s)); h.series = []; }
+function dedupe(points) {  // lightweight-charts needs strictly increasing times
+  const out = []; for (const p of points) { if (out.length && out[out.length - 1].time >= p.time) out[out.length - 1] = p; else out.push(p); } return out;
+}
+const COLORS = ["#4c8dff", "#3fb37f", "#d4a72c", "#c678dd", "#e5534b", "#56b6c2"];
+
+// ---- confirm dialog --------------------------------------------------------------------------
+function confirmDlg(msg) {
+  return new Promise(res => {
+    $("dlg-msg").textContent = msg; const d = $("dlg"); d.showModal();
+    $("dlg-yes").onclick = () => { d.close(); res(true); }; $("dlg-no").onclick = () => { d.close(); res(false); };
+  });
+}
+
+// ---- header (WebSocket push) -----------------------------------------------------------------
+let snap = {};
+function renderHeader(s) {
+  snap = s;
+  const a = s.account || {}, r = s.risk || {}, caps = r.caps || {}, st = s.status || {}, ws = s.ws || {};
+  $("offline").style.display = s.bot_online ? "none" : "block";
+  const live = (s.mode || "").includes("LIVE");
+  const step = a.dd_step == null ? "—" : a.dd_step < 0 ? '<span class="neg">HALT</span>' : a.dd_step < 1 ? `<span class="warn">×${a.dd_step}</span>` : "×1";
+  const kv = (label, val) => `<div class="kv"><b>${val}</b><span>${label}</span></div>`;
+  const t = s.today || {};
+  $("hdr").innerHTML = `<span class="mode ${live ? "live" : ""}">${esc(s.mode || s.env || "?")}</span>` +
+    kv("bot state", s.state ? `<span class="${s.state === "RUNNING" ? "pos" : "warn"}">${s.state}</span>` : "offline") +
+    kv("equity USDT", usd(a.equity)) +
+    kv("today net $ (UTC day)", sgn(t.net_usd)) +
+    kv("drawdown · throttle", `${pct(a.drawdown)} · ${step}`) +
+    kv("open risk / cap", `${pct(r.open_risk)} / ${pct(caps.max_total_open_risk, 1)}`) +
+    kv("positions", `${r.positions ?? "—"} / ${caps.max_positions ?? "—"}`) +
+    kv("daily loss / limit", `${pct(a.daily_loss)} / ${pct(caps.daily_loss_limit, 1)}`) +
+    kv("WS market · user", `${ws.market ? "✅" : "❌"} · ${ws.user == null ? "n/a" : ws.user ? "✅" : "❌"}`) +
+    kv("risk scale", num(r.risk_scale, 2)) +
+    kv("updated", s.ts ? bkk(s.ts) : "—");
+  if (current === "live") renderCards();
+}
+function connectWS() {
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onmessage = e => renderHeader(JSON.parse(e.data));
+  ws.onclose = () => setTimeout(connectWS, 3000);
+}
+
+// ---- tabs ------------------------------------------------------------------------------------
+const TABS = {floor: "Casino Floor", ledger: "Edge Ledger", bankroll: "Bankroll", live: "Live", behavior: "Behavior", discipline: "Discipline log"};
+let current = "floor";
+const loaders = {floor: loadFloor, ledger: loadLedger, bankroll: loadBankroll, live: loadLive, behavior: loadBehavior, discipline: loadDiscipline};
+function show(tab) {
+  current = tab;
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.t === tab));
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === tab));
+  try { localStorage.setItem("ap-tab", tab); } catch (e) {}
+  loaders[tab]();
+}
+$("nav").innerHTML = Object.entries(TABS).map(([k, v]) => `<button data-t="${k}">${v}</button>`).join("");
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => show(b.dataset.t));
+
+async function loadFloor() {
+  const d = await api("/api/tables");
+  $("scan-ts").textContent = d.ts ? "· scanned " + bkk(d.ts) : "· no scan yet";
+  table("t-floor", [
+    {k: "symbol", t: "Symbol"}, {k: "status", t: "Table", f: v => `<span class="tag ${v}">${v}</span>`},
+    {k: "score", t: "Score (move/cost)", f: v => num(v)}, {k: "spread_bps", t: "Spread bp", f: v => num(v)},
+    {k: "depth_usd", t: "Depth ±10bp $k", f: v => num(v / 1e3, 0)}, {k: "quote_volume", t: "24h vol $M", f: v => num(v / 1e6, 0)},
+    {k: "funding_rate", t: "Funding %", f: v => num(v * 100, 4)}, {k: "tick_bps", t: "Tick bp", f: v => num(v)},
+    {k: "cluster", t: "Cluster"}, {k: "reasons", t: "Ineligible because", f: v => v.length ? esc(v.join(", ")) : '<span class="pos">eligible</span>'},
+  ], d.rows);
+}
+
+async function loadLedger() {
+  const rows = await api("/api/ledger");
+  table("t-ledger", [
+    {k: "game", t: "Game"}, {k: "status", t: "Status", f: v => `<span class="tag ${v}">${v}</span>`},
+    {k: "window", t: "Window"}, {k: "n", t: "n"}, {k: "win_rate", t: "Win %", f: v => pct(v, 1)},
+    {k: "mean", t: "μ R", f: v => sgn(v, 3)}, {k: "mu_low", t: "μ_low (95%)", f: v => sgn(v, 3)},
+    {k: "p", t: "p", f: v => num(v, 4)}, {k: "delta", t: "Δ vs base", f: v => sgn(v, 3)},
+    {k: "delta_low", t: "Δ_low", f: v => sgn(v, 3)}, {k: "bh", t: "BH", f: v => v ? "✅" : "—"},
+    {k: "pass", t: "PASS", f: v => v ? '<span class="pos">PASS</span>' : "—"}, {k: "kelly", t: "Kelly f", f: v => pct(v, 3)},
+    {k: "since", t: "Status since", f: v => bkk(v)},
+  ], rows, loadGame);
+  if (rows.length && !$("g-title").dataset.game) loadGame(rows[0]);
+}
+async function loadGame(row) {
+  $("g-title").textContent = "Cumulative R by stage — " + row.game; $("g-title").dataset.game = row.game;
+  const d = await api("/api/game/" + encodeURIComponent(row.game));
+  const h = lc("c-game"); resetSeries(h);
+  Object.entries(d.curves).forEach(([stage, pts], i) => {
+    const s = h.chart.addLineSeries({color: COLORS[i % COLORS.length], lineWidth: 2, title: stage});
+    s.setData(dedupe(pts.map(([t, v]) => ({time: lcTime(t), value: v})))); h.series.push(s);
+  });
+  h.chart.timeScale().fitContent();
+  histogram($("h-game"), d.r.filter(x => !x.stage.startsWith("BASE")).map(x => x.r), 20, "R");
+  table("t-ghist", [{k: "ts", t: "When", f: v => bkk(v)}, {k: "from", t: "From"}, {k: "to", t: "To"}, {k: "reason", t: "Reason"}], [...row.history].reverse());
+}
+
+async function loadBankroll() {
+  const d = await api("/api/bankroll");
+  const e = lc("c-eq"); resetSeries(e);
+  const eq = e.chart.addLineSeries({color: "#4c8dff", lineWidth: 2});
+  eq.setData(dedupe(d.equity.map(r => ({time: lcTime(r.ts), value: r.equity})))); e.series.push(eq);
+  if (d.sweep_baseline > 0) eq.createPriceLine({price: d.sweep_baseline, color: "#d4a72c", lineStyle: 2, title: "sweep baseline"});
+  e.chart.timeScale().fitContent();
+  const dd = lc("c-dd"); resetSeries(dd);
+  const s = dd.chart.addAreaSeries({lineColor: "#e5534b", topColor: "#e5534b44", bottomColor: "#e5534b05"});
+  s.setData(dedupe(d.equity.map(r => ({time: lcTime(r.ts), value: -100 * r.drawdown})))); dd.series.push(s);
+  s.createPriceLine({price: -5, color: "#d4a72c", lineStyle: 2, title: "½ size"});
+  s.createPriceLine({price: -10, color: "#e5534b", lineStyle: 2, title: "HALT"});
+  dd.chart.timeScale().fitContent();
+  const r = d.risk || {}, caps = r.caps || {};
+  const bar = (label, v, cap) => `<tr><td>${esc(label)}</td><td>${pct(v)}</td><td class="mute">cap ${pct(cap, 1)}</td>
+    <td style="width:45%"><div class="bar"><i style="width:${Math.min(100, (100 * (v || 0)) / (cap || 1))}%;background:${(v || 0) > 0.8 * (cap || 1) ? "var(--warn)" : "var(--accent)"}"></i></div></td></tr>`;
+  $("exposure").innerHTML = "<table>" + bar("total open risk", r.open_risk, caps.max_total_open_risk) +
+    bar("long", r.long_risk, caps.max_net_direction_risk) + bar("short", r.short_risk, caps.max_net_direction_risk) +
+    bar("net direction", Math.abs((r.long_risk || 0) - (r.short_risk || 0)), caps.max_net_direction_risk) +
+    Object.entries(r.by_cluster || {}).map(([c, v]) => bar("cluster " + c, v, caps.max_cluster_risk)).join("") + "</table>" +
+    `<p class="mute">sweep baseline ${usd(d.sweep_baseline)} USDT · suggestion above ×${(d.account || {}).sweep_trigger ?? "—"}</p>`;
+}
+
+async function loadLive() {
+  const t = await api("/api/tables");
+  const syms = new Set([...(snap.positions || []).map(p => p.symbol), ...t.rows.filter(r => r.status === "open").map(r => r.symbol)]);
+  const sel = $("sym"), prev = sel.value;
+  sel.innerHTML = [...syms].map(s => `<option>${esc(s)}</option>`).join("") || "<option value=''>no open tables</option>";
+  if (syms.has(prev)) sel.value = prev;
+  renderCards();
+  if (sel.value) loadChart(sel.value);
+}
+$("sym").onchange = e => loadChart(e.target.value);
+async function loadChart(sym) {
+  const d = await api("/api/chart/" + encodeURIComponent(sym));
+  const h = lc("c-price"); resetSeries(h);
+  const s = h.chart.addCandlestickSeries({upColor: "#3fb37f", downColor: "#e5534b", wickUpColor: "#3fb37f", wickDownColor: "#e5534b", borderVisible: false});
+  s.setData(dedupe(d.bars.map(b => ({time: lcTime(b[0]), open: b[1], high: b[2], low: b[3], close: b[4]})))); h.series.push(s);
+  const first = d.bars.length ? d.bars[0][0] : 0;
+  const marks = [];
+  d.trades.filter(t => t.entry_ts >= first).forEach(t => {
+    marks.push({time: lcTime(t.entry_ts), position: t.side === "BUY" ? "belowBar" : "aboveBar", color: "#4c8dff", shape: t.side === "BUY" ? "arrowUp" : "arrowDown", text: "in"});
+    marks.push({time: lcTime(t.exit_ts), position: "aboveBar", color: t.r >= 0 ? "#3fb37f" : "#e5534b", shape: "circle", text: `${t.exit_reason} ${t.r.toFixed(2)}R`});
+  });
+  marks.sort((a, b) => a.time - b.time); s.setMarkers(marks);
+  const p = d.position;
+  if (p) {
+    const line = (price, color, title, style = 0) => price && s.createPriceLine({price, color, lineStyle: style, lineWidth: 1, title});
+    line(p.entry_avg || p.entry_ref, "#4c8dff", "entry");
+    line(p.stop, "#e5534b", "SL");
+    const R = Math.abs(p.entry_ref - p.stop_initial);
+    (p.targets || []).forEach((tg, i) => line(p.entry_ref + p.direction * tg[0] * R, "#3fb37f", `TP${i + 1}`, 2));
+    line(p.liq, "#c678dd", "LIQ", 1);
+  }
+  h.chart.timeScale().fitContent();
+}
+function renderCards() {
+  const ps = snap.positions || [];
+  $("cards").innerHTML = ps.length ? ps.map(p => `<div class="card"><h3>${esc(p.symbol)} · ${p.direction > 0 ? '<span class="pos">LONG</span>' : '<span class="neg">SHORT</span>'} · <span class="tag ${esc(p.status)}">${esc(p.status)}</span></h3>
+    <table><tr><td>game</td><td>${esc(p.game_id)}</td></tr><tr><td>state</td><td>${esc(p.state)}</td></tr>
+    <tr><td>qty</td><td>${num(p.filled_qty, 6)}</td></tr><tr><td>entry</td><td>${num(p.entry_avg, 6)}</td></tr>
+    <tr><td>mark</td><td>${num(p.mark, 6)}</td></tr><tr><td>SL</td><td>${num(p.stop, 6)}</td></tr>
+    <tr><td>liquidation</td><td>${num(p.liq, 6)}</td></tr><tr><td>leverage</td><td>${p.leverage}×</td></tr>
+    <tr><td>risk f</td><td>${pct(p.f, 3)}</td></tr><tr><td>uPnL $</td><td>${sgn(p.upnl)}</td></tr>
+    <tr><td>TP hit</td><td>${p.tp_hit}/${(p.targets || []).length}</td></tr></table>
+    <div class="row" style="margin-top:8px"><button class="act" onclick="control('close',{symbol:'${esc(p.symbol)}'},'Close ${esc(p.symbol)} at market?')">Close</button></div></div>`).join("")
+    : '<div class="card mute">No open positions. "No edge → no bet" is correct behaviour.</div>';
+}
+
+$("scope").onchange = loadBehavior;
+async function loadBehavior() {
+  const d = await api("/api/behavior?scope=" + $("scope").value);
+  $("beh-sum").textContent = `${d.n} trades · gross ${num(d.gross_r)}R · fee share ${pct(d.fee_share, 1)} · slippage share ${pct(d.slippage_share, 1)}`;
+  const box = $("beh");
+  const titles = {game: "PnL by game", symbol: "PnL by symbol", side: "PnL by side", hour_bkk: "PnL by entry hour (Bangkok)", regime: "PnL by regime"};
+  box.innerHTML = Object.keys(titles).map(k => `<div class="card"><h3>${titles[k]}</h3><div id="b-${k}"></div></div>`).join("") +
+    '<div class="card"><h3>MAE vs MFE (R)</h3><div id="b-mae"></div></div><div class="card"><h3>Hold time (min)</h3><div id="b-hold"></div></div>' +
+    '<div class="card"><h3>Shadow vs real slippage (mean R per trade)</h3><div class="scroll"><table id="t-slip"></table></div></div>';
+  Object.keys(titles).forEach(k => bars($("b-" + k), d.groups[k]));
+  scatter($("b-mae"), d.mae_mfe); histogram($("b-hold"), d.hold_min, 20, "m");
+  table("t-slip", [{k: "stage", t: "Stage"}, {k: "n", t: "n"}, {k: "slippage_r", t: "actual", f: v => num(v, 4)}, {k: "model_slippage_r", t: "model", f: v => num(v, 4)}],
+    Object.entries(d.slippage_by_stage).map(([stage, v]) => ({stage, ...v})));
+}
+
+async function loadDiscipline() {
+  const d = await api("/api/discipline");
+  bars($("nobet"), Object.fromEntries(Object.entries(d.no_bet).map(([k, n]) => [k, {n, r: n, usd: null}])), "r");
+  $("nobet").querySelectorAll("tr").forEach(tr => { tr.children[2].remove(); tr.children[2].remove(); });
+  table("t-pend", [{k: "path", t: "Setting"}, {k: "value", t: "New value", f: v => esc(JSON.stringify(v))}, {k: "queued_ms", t: "Queued", f: v => bkk(v)}, {k: "apply_at_ms", t: "Applies", f: v => bkk(v)}], d.pending);
+  table("t-cfg", [{k: "ts", t: "When", f: v => bkk(v)}, {k: "hash", t: "Hash"}, {k: "note", t: "Note"}], d.config_versions);
+  table("t-risk", [{k: "ts", t: "When", f: v => bkk(v)}, {k: "kind", t: "Kind"}, {k: "symbol", t: "Symbol"}, {k: "detail", t: "Detail", f: v => `<span class="mute">${esc(JSON.stringify(v))}</span>`}], d.risk_events);
+  table("t-ctl", [{k: "ts", t: "When", f: v => bkk(v)}, {k: "action", t: "Action"}, {k: "args", t: "Args", f: v => esc(JSON.stringify(v))}, {k: "status", t: "Status"}, {k: "result", t: "Result"}], d.controls);
+}
+$("exports").innerHTML = ["trades", "signals", "ledger", "equity", "risk_events"].map(k => `<a class="act" style="text-decoration:none;color:inherit;padding:5px 10px;border:1px solid var(--line);border-radius:6px" href="/api/export/${k}.csv">${k}.csv</a>`).join("");
+
+// ---- controls (risk-reducing only; always confirmed) ------------------------------------------
+async function control(action, args, msg) {
+  if (!(await confirmDlg(msg))) return;
+  const r = await api("/api/control", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({action, args})});
+  if (r.detail) alertRow(r.detail); else setTimeout(loadDiscipline, 2500);
+}
+function alertRow(t) { $("t-ctl").insertAdjacentHTML("afterbegin", `<tr><td colspan="5" class="neg">${esc(t)}</td></tr>`); }
+document.querySelectorAll("button[data-c]").forEach(b => b.onclick = () => {
+  const c = b.dataset.c;
+  if (c === "pause") return control("pause", {}, "Pause new entries? Open positions keep their SL/TP.");
+  if (c === "kill") return control("kill", {}, "KILL: cancel all orders, flatten every position and halt trading. Resume needs /resume after 12 h. Continue?");
+  if (c === "close") { const s = $("close-sym").value.trim() || "all"; return control("close", {symbol: s}, `Close ${s} at market?`); }
+  if (c === "risk_scale") { const v = $("scale").value; return control("risk_scale", {value: +v}, `Lower risk scale to ${v}?`); }
+  if (c === "lower") { const p = $("lpath").value.trim(), v = $("lval").value.trim(); return control("lower", {path: p, value: v}, `Lower ${p} to ${v}? (refused if it would increase risk)`); }
+});
+
+let initial = "floor";
+try { initial = localStorage.getItem("ap-tab") || "floor"; } catch (e) {}
+api("/api/snapshot").then(renderHeader);
+show(TABS[initial] ? initial : "floor");
+connectWS();
+setInterval(() => { if (current !== "live") loaders[current](); else renderCards(); }, 30000);
+</script>
+</body>
+</html>

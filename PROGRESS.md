@@ -35,6 +35,7 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 | 4 SHADOW runner, game lifecycle, persistence, research loop, `run` command | ✅ done | 98 passed (96 unit + 2 DEMO integration) |
 | 5 Sizing, derived leverage, caps, discipline §7, executor, UDS, reconciliation, PROBE on DEMO | ✅ done | 147 passed (144 unit + 3 DEMO integration) |
 | 6 Telegram: throttled non-blocking alerts, debounced tables, daily report, chat-gated commands | ✅ done | 155 passed (152 unit + 3 DEMO integration) |
+| 7 Dashboard: FastAPI + WS push, password auth, 6 views, risk-reducing control queue, CSV | ✅ done | 163 passed (160 unit + 3 DEMO integration) |
 
 ## Integration tests (skip if no DEMO keys)
 - tests/integration/test_demo_metadata.py — time sync, exchangeInfo, brackets, fees (read-only)
@@ -128,6 +129,23 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
   game transitions, table changes, SL failure / orphan / kill / DD step / config
   queued-applied-rejected, connectivity down/restored, sweep suggestions.
 
+## Phase 7 notes
+- Dashboard reads ONLY the DB (`dashboard/backend.py`), so it runs in-process (`run --dashboard`)
+  or standalone (`dashboard`, e.g. its own compose service). The bot publishes kv `live_snapshot`
+  every 5 s (state, account, open risk vs caps, positions + liq/uPnL from positionRisk, WS health)
+  and kv `bars:<SYM>` (last 200 1m bars, seeded from the kline backfill) for open tables/positions.
+- Controls: table `control_requests`; dashboard POST (JSON only) enqueues, bot polls every 2 s and
+  runs each through `risk.controls.Controls`. Allowed actions: pause, close, kill, risk_scale,
+  lower. `resume` is deliberately NOT a dashboard action (it can raise activity; Telegram /resume
+  remains, with its 12 h rule). Requests not picked up within 60 s expire instead of running late.
+- Auth: password → HMAC-SHA256 signed expiring cookie (12 h, HttpOnly, SameSite=strict); every
+  /api route and /ws require it; wrong password costs 1 s. Refuses to start without
+  DASHBOARD_PASSWORD; binds DASHBOARD_HOST (default 127.0.0.1). No OpenAPI/docs routes.
+- Frontend: one static page, lightweight-charts@4.2.0 (unpkg, pinned), sortable tables, <dialog>
+  confirms on every control, CSV links (trades/signals/ledger/equity/risk_events, UTC ISO),
+  all times shown Asia/Bangkok. Smoke-checked in headless Chrome against a live DEMO run:
+  all 6 tabs render, no JS errors, a control round-tripped through the running bot.
+
 ## Open issues
 - Second-TF games (A@15s, B@5s/15s) can only leave RESEARCH via tick replay of recorded
   Parquet; `replay_ticks` exists but the daily research loop only uses klines so far.
@@ -139,20 +157,7 @@ After final summary is written here and committed: stop any background processes
 (dev servers, bots, watchers), then run `pmset sleepnow`.
 
 ## Next step
-Phase 7 IN PROGRESS (stopped: usage limit). Done so far: deps fastapi/uvicorn/python-multipart
-added (uncommitted code: none). Planned design:
-- Dashboard reads ONLY the DB (works in-process or as separate compose service).
-- Bot publishes kv "live_snapshot" (status, positions incl. liq, scan rows) every 5 s and
-  kv "bars:<SYMBOL>" (last 200 1m bars) on each 1m close for open tables/positions.
-- Controls: new table control_requests (id, ts, action, args, status, result); dashboard POST
-  enqueues; bot polls every 2 s and runs them via risk.controls.Controls (reduce-only).
-- Files: dashboard/backend.py (queries via reports.py + kv), dashboard/server.py (FastAPI:
-  cookie login w/ HMAC token, /api/snapshot|ledger|game/{id}|bankroll|behavior|discipline|
-  chart/{sym}|control, /api/export/{kind}.csv, WS /ws push every 2 s; refuse to start without
-  DASHBOARD_PASSWORD; bind DASHBOARD_HOST), dashboard/static/index.html (lightweight-charts
-  pinned version from unpkg, Bangkok time display, confirm dialogs).
-- CLI: `dashboard` command and `run --dashboard`. Tests with fastapi TestClient.
-Then Phase 8: Dockerfile + docker-compose (bot, dashboard, postgres), README (setup, demo key
+Phase 8: Dockerfile + docker-compose (bot, dashboard, postgres), README (setup, demo key
 creation, API permissions: futures ON, withdrawals OFF, IP whitelist, universal transfer only if
 auto-sweep; keep most capital outside futures wallet; go-live checklist + gate), final summary,
 then stop background processes and run `pmset sleepnow` (user instruction).

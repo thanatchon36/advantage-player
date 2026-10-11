@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -33,6 +34,7 @@ from advantage_player.marketdata.hub import MarketDataHub
 from advantage_player.marketdata.recorder import TickRecorder
 from advantage_player.notify.commands import build_commands
 from advantage_player.notify.telegram import TelegramNotifier
+from advantage_player.risk import control_queue
 from advantage_player.risk.controls import Controls
 from advantage_player.risk.discipline import Discipline, DisciplineState, entry_blockers
 from advantage_player.scanner.persist import save_scan
@@ -97,6 +99,7 @@ class Bot:
         self._tasks: list[asyncio.Task[None]] = []
         self._bg: set[asyncio.Task[None]] = set()
         self._warmed: set[str] = set()
+        self._bars_1m: dict[str, deque[list[float]]] = {}  # dashboard charts
         self.started_ms = int(time.time() * 1000)
         self.stopping = asyncio.Event()
         self.config_path = "config.yaml"
@@ -190,6 +193,20 @@ class Bot:
         self.engine.on_bar(bar)
         if self.live is not None:
             self._fire(self.live.on_bar(bar))
+        if bar.tf_s == 60:
+            self._publish_bar(bar)
+
+    def _publish_bar(self, bar: Bar, write: bool = True) -> None:
+        """Last 200 1m bars per open table / position symbol, for the dashboard chart."""
+        q = self._bars_1m.setdefault(bar.symbol, deque(maxlen=200))
+        q.append([bar.open_ms, bar.open, bar.high, bar.low, bar.close, bar.volume])
+        if not write:
+            return
+        charted = set(self.scan.open if self.scan else []) | set(
+            self.live.positions if self.live else []
+        )
+        if bar.symbol in charted:
+            kv_set(self.db, self.env, f"bars:{bar.symbol}", list(q))
 
     def _on_market_event(self, ev: MarketEvent) -> None:
         if isinstance(ev, MarkPrice):
@@ -395,6 +412,75 @@ class Bot:
                 "config", f"config {ev.kind}: {ev.paths} ({ev.reason}) → effective {self.cfg.hash}"
             )
 
+    # ---- dashboard (reads only the DB) ---------------------------------------------------------
+    async def publish_snapshot(self) -> None:
+        kv_set(self.db, self.env, "live_snapshot", await self.live_snapshot())
+
+    async def live_snapshot(self) -> dict[str, Any]:
+        snap = self.account.snapshot()
+        d = self.discipline.state
+        now = self.now_ms()
+        state = (
+            "HALTED"
+            if d.halted
+            else "PAUSED"
+            if d.manual_pause or d.paused_until_ms > now
+            else "RUNNING"
+        )
+        positions = self.live.snapshot() if self.live else []
+        if positions and self.gateway is not None:
+            ex = {p["symbol"]: p for p in await self.gateway.positions()}
+            for p in positions:
+                e = ex.get(p["symbol"], {})
+                p["liq"] = float(e.get("liquidationPrice") or 0)
+                p["upnl"] = float(e.get("unRealizedProfit") or 0)
+                p["mark"] = self.mark(p["symbol"])
+                p["cluster"] = self.cluster(p["symbol"])
+        risks = self.live.open_risks() if self.live else []
+        by_cluster: dict[str, float] = {}
+        for r in risks:
+            by_cluster[str(r.cluster)] = by_cluster.get(str(r.cluster), 0.0) + r.f
+        rc = self.cfg.risk
+        return {
+            "ts": now,
+            "mode": self.banner,
+            "env": self.env,
+            "state": state,
+            "status": self.status(),
+            "account": {
+                **snap.__dict__,
+                "sweep_baseline": self.account.sweep_baseline,
+                "sweep_trigger": rc.sweep_trigger,
+            },
+            "risk": {
+                "open_risk": sum(r.f for r in risks),
+                "long_risk": sum(r.f for r in risks if r.direction > 0),
+                "short_risk": sum(r.f for r in risks if r.direction < 0),
+                "by_cluster": by_cluster,
+                "positions": len(risks),
+                "risk_scale": self.risk_scale,
+                "caps": {
+                    "max_total_open_risk": rc.max_total_open_risk,
+                    "max_cluster_risk": rc.max_cluster_risk,
+                    "max_net_direction_risk": rc.max_net_direction_risk,
+                    "max_positions": rc.max_positions,
+                    "daily_loss_limit": rc.daily_loss_limit,
+                    "dd_half_at": rc.dd_half_at,
+                    "dd_halt_at": rc.dd_halt_at,
+                },
+            },
+            "discipline": d.to_json(),
+            "ws": {
+                "market": self.hub.streams.healthy,
+                "user": None if self.uds is None else self.uds.connected,
+            },
+            "positions": positions,
+        }
+
+    async def poll_controls(self) -> None:
+        for note in await control_queue.process_pending(self.db, self.env, self.controls):
+            log.info("dashboard_control", result=note)
+
     # ---- loops -----------------------------------------------------------------------------
     async def _every(
         self, seconds: float, fn: Callable[[], Awaitable[None]], name: str, delay: float = 0.0
@@ -432,6 +518,10 @@ class Bot:
                 bars = await fetch_klines(self.rest, sym, tf, end - days * 86_400_000, end)
                 for b in bars:
                     self.engine.warm(b)
+                if tf == "1m" and bars:
+                    for b in bars[:-1]:
+                        self._publish_bar(b, write=False)
+                    self._publish_bar(bars[-1])
             self._warmed.add(sym)
 
     async def evaluate_once(self) -> None:
@@ -555,6 +645,8 @@ class Bot:
         )
         self._spawn(self._every(86_400, self.refresh_meta, "meta", 86_400), "meta")
         self._spawn(self._every(600, self.sync_clock, "clock", 600), "clock")
+        self._spawn(self._every(5, self.publish_snapshot, "snapshot"), "snapshot")
+        self._spawn(self._every(2, self.poll_controls, "controls"), "controls")
         await self.notify("start", f"bot started, config {self.cfg.hash}")
 
     async def stop(self) -> None:

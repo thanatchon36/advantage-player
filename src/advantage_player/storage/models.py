@@ -195,3 +195,17 @@ class KVRow(Base):
     key: Mapped[str] = mapped_column(String(64))
     value: Mapped[dict[str, Any]] = mapped_column(JSON)
     updated: Mapped[datetime] = mapped_column(TS, default=utcnow)
+
+
+class ControlRequest(Base):
+    """Dashboard → bot control queue. Only risk-reducing actions (rule 9) are accepted."""
+
+    __tablename__ = "control_requests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    env: Mapped[str] = mapped_column(String(8), index=True)
+    ts: Mapped[datetime] = mapped_column(TS, index=True, default=utcnow)
+    action: Mapped[str] = mapped_column(String(16))
+    args: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(12), index=True, default="pending")
+    result: Mapped[str] = mapped_column(String(512), default="")
+    done_ts: Mapped[datetime | None] = mapped_column(TS, nullable=True)

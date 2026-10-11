@@ -198,18 +198,58 @@ async def cmd_research(config_path: str, symbols: list[str], days: int) -> int:
     return 0
 
 
-async def cmd_run(config_path: str, seconds: int | None) -> int:
+def _dashboard_password(secrets: Secrets) -> str:
+    pw = secrets.dashboard_password.get_secret_value()
+    if not pw:
+        raise SystemExit("DASHBOARD_PASSWORD is empty — refusing to start the dashboard")
+    return pw
+
+
+async def cmd_dashboard(config_path: str) -> int:
+    """Standalone dashboard: reads only the DB, so it can run beside (or apart from) the bot."""
+    from advantage_player.dashboard.server import serve
+
+    secrets = Secrets()
+    secrets.check_mode()
+    pw = _dashboard_password(secrets)
+    cfg = load_config(config_path)
+    print(
+        f"=== DASHBOARD {secrets.banner} | http://{secrets.dashboard_host}:"
+        f"{secrets.dashboard_port} ==="
+    )
+    await serve(
+        make_engine(cfg.storage.url),
+        secrets.binance_env.value,
+        pw,
+        secrets.dashboard_host,
+        secrets.dashboard_port,
+    )
+    return 0
+
+
+async def cmd_run(config_path: str, seconds: int | None, dashboard: bool = False) -> int:
     import signal
 
     from advantage_player.app import Bot
 
     secrets = Secrets()
+    pw = _dashboard_password(secrets) if dashboard else ""
     bot = Bot(secrets, load_config(config_path))
     print(f"=== MODE: {bot.banner} | config {bot.cfg.hash} ===")
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, bot.stopping.set)
     await bot.start()
+    dash: asyncio.Task[None] | None = None
+    if dashboard:
+        from advantage_player.dashboard.server import serve
+
+        dash = asyncio.create_task(
+            serve(
+                bot.db, bot.env, pw, secrets.dashboard_host, secrets.dashboard_port, bot.stopping
+            )
+        )
+        print(f"dashboard on http://{secrets.dashboard_host}:{secrets.dashboard_port}")
     deadline = loop.time() + seconds if seconds else None
     while not bot.stopping.is_set():
         try:
@@ -220,6 +260,8 @@ async def cmd_run(config_path: str, seconds: int | None) -> int:
             break
     print(bot.status(), flush=True)
     await bot.stop()
+    if dash is not None:
+        await dash
     return 0
 
 
@@ -238,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("symbols", nargs="*", default=["BTCUSDT", "ETHUSDT"])
     runp = sub.add_parser("run", help="run the bot (SHADOW for all games; executes PROBE/LIVE)")
     runp.add_argument("--seconds", type=int, default=None, help="stop after N seconds")
+    runp.add_argument("--dashboard", action="store_true", help="also serve the dashboard")
+    sub.add_parser("dashboard", help="serve the dashboard (reads the DB only)")
     args = p.parse_args(argv)
     setup_logging(args.log_level)
     if args.cmd == "info":
@@ -247,7 +291,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "stream":
         return asyncio.run(cmd_stream(args.config, args.seconds, args.symbols))
     if args.cmd == "run":
-        return asyncio.run(cmd_run(args.config, args.seconds))
+        return asyncio.run(cmd_run(args.config, args.seconds, args.dashboard))
+    if args.cmd == "dashboard":
+        return asyncio.run(cmd_dashboard(args.config))
     if args.cmd == "research":
         return asyncio.run(cmd_research(args.config, args.symbols, args.days))
     return 1
