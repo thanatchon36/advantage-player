@@ -15,21 +15,30 @@ from typing import Any, Protocol
 
 import structlog
 
-from advantage_player.config.settings import AppConfig, Secrets
+from advantage_player.config.changes import ChangeEvent, ConfigManager, Pending, apply_leaves
+from advantage_player.config.settings import AppConfig, Secrets, load_config
 from advantage_player.exchange.endpoints import ENDPOINTS
 from advantage_player.exchange.metadata import ExchangeMetadata
 from advantage_player.exchange.rest import BinanceRest
+from advantage_player.execution.account import AccountTracker
+from advantage_player.execution.executor import Executor as LiveExecutor
+from advantage_player.execution.gateway import Gateway
+from advantage_player.execution.userstream import UserStream
 from advantage_player.ledger.journal import Journal
 from advantage_player.ledger.lifecycle import GameStatus, Lifecycle, Transition
 from advantage_player.marketdata.bars import Bar
+from advantage_player.marketdata.events import BookTicker, MarketEvent, MarkPrice
 from advantage_player.marketdata.hub import MarketDataHub
 from advantage_player.marketdata.recorder import TickRecorder
+from advantage_player.risk.controls import Controls
+from advantage_player.risk.discipline import Discipline, DisciplineState, entry_blockers
 from advantage_player.scanner.persist import save_scan
 from advantage_player.scanner.scanner import ScanResult, TableScanner
 from advantage_player.sim.engine import GameEngine, SignalEvent
 from advantage_player.sim.fills import Costs, TradeResult
 from advantage_player.sim.replay import evaluate, fetch_klines, replay_bars
 from advantage_player.storage.db import make_engine, record_config_version
+from advantage_player.storage.kv import kv_get, kv_set
 
 log = structlog.get_logger(__name__)
 FALLBACK = Costs(maker_fee=0.0002, taker_fee=0.0005)
@@ -87,6 +96,31 @@ class Bot:
         self._warmed: set[str] = set()
         self.started_ms = int(time.time() * 1000)
         self.stopping = asyncio.Event()
+        self.config_path = "config.yaml"
+        # discipline / controls state survives restarts
+        self.discipline = Discipline(
+            cfg.discipline, DisciplineState.from_json(kv_get(self.db, self.env, "discipline"))
+        )
+        self.risk_scale = float(kv_get(self.db, self.env, "risk_scale", 1.0))
+        self.overrides: dict[str, Any] = dict(kv_get(self.db, self.env, "overrides", {}) or {})
+        pend = [Pending(**p) for p in kv_get(self.db, self.env, "config_pending", []) or []]
+        if self.overrides:
+            self.cfg = cfg = apply_leaves(cfg, self.overrides)
+        self.config_mgr = ConfigManager(cfg, pend)
+        self.account = AccountTracker(self.db, self.env, cfg.risk, self.notify)
+        self.account.on_halt = self._on_halt
+        self.controls = Controls(self, lambda m: self.notify("control", m))
+        self._last_funding: dict[str, int] = {}
+        self.gateway: Gateway | None = None
+        self.live: LiveExecutor | None = None
+        self.uds: UserStream | None = None
+        if secrets.has_keys:
+            self.gateway = Gateway(self.rest)
+            self.live = LiveExecutor(self, self.gateway, self.env)
+            self.executor = self.live
+            self.uds = UserStream(self.rest, self.ep.ws_stream, self._on_user_event)
+            self.uds.on_reconnect = self._on_uds_reconnect
+            self.hub.event_subscribers.append(self._on_market_event)
 
     # ---- helpers ---------------------------------------------------------------------------
     @property
@@ -142,6 +176,16 @@ class Bot:
     # ---- hooks -----------------------------------------------------------------------------
     def _on_bar(self, bar: Bar) -> None:
         self.engine.on_bar(bar)
+        if self.live is not None:
+            self._fire(self.live.on_bar(bar))
+
+    def _on_market_event(self, ev: MarketEvent) -> None:
+        if isinstance(ev, MarkPrice):
+            prev = self.engine._next_funding.get(ev.symbol)
+            if prev and ev.next_funding_ms > prev[0]:
+                self._last_funding[ev.symbol] = prev[0]
+            if self.live is not None and ev.symbol in self.live.positions:
+                self._fire(self.live.on_mark(ev.symbol, ev.mark))
 
     def _on_signal(self, ev: SignalEvent) -> None:
         if ev.baseline:
@@ -181,6 +225,163 @@ class Bot:
         self._fire(
             self.notify("game", f"game {t.game_id}: {t.from_status} → {t.to_status} ({t.reason})")
         )
+
+    # ---- ExecContext (used by the executor) ---------------------------------------------------
+    def now_ms(self) -> int:
+        return self.rest.clock.now_ms()
+
+    def bankroll(self) -> float:
+        return self.account.equity
+
+    def drawdown(self) -> float:
+        return self.account.snapshot().drawdown
+
+    def daily_loss(self) -> float:
+        return self.account.snapshot().daily_loss
+
+    def cluster(self, symbol: str) -> int:
+        return self.scan.cluster_of(symbol) if self.scan else -1
+
+    def real_stats(self, game_id: str) -> tuple[float, float]:
+        return self.lifecycle.real_stats(game_id)
+
+    def book(self, symbol: str) -> BookTicker | None:
+        st = self.hub.state.symbols.get(symbol)
+        return st.book if st else None
+
+    def mark(self, symbol: str) -> float | None:
+        st = self.hub.state.symbols.get(symbol)
+        return st.mark.mark if st and st.mark else None
+
+    def costs(self, symbol: str) -> Costs:
+        return self.costs_for(symbol)
+
+    def blockers(self, symbol: str, regime: str) -> list[str]:
+        now = self.now_ms()
+        st = self.hub.state.symbols.get(symbol)
+        d = self.cfg.discipline
+        stale = self.hub.state.stale_reasons(
+            symbol, int(time.time() * 1000), d.stale_data_s, ("book", "mark")
+        )
+        ws_ok = self.hub.streams.healthy and (self.uds is None or self.uds.connected)
+        return entry_blockers(
+            d,
+            now_ms=now,
+            stale=stale,
+            ws_healthy=ws_ok,
+            spread_bps=st.book.spread_bps if st and st.book else None,
+            regime=regime,
+            next_funding_ms=st.mark.next_funding_ms if st and st.mark else None,
+            last_funding_ms=self._last_funding.get(symbol),
+            clock_drift_ms=self.rest.clock.drift_ms,
+            rate_headroom=self.rest.limiter.headroom(),
+            allow_high_vol=self.cfg.regime.allow_high_vol,
+        )
+
+    async def edge_check(self, game_ids: list[str]) -> None:
+        await self.evaluate_once()
+
+    def persist_discipline(self) -> None:
+        kv_set(self.db, self.env, "discipline", self.discipline.state.to_json())
+
+    # ---- ControlTarget (Telegram / dashboard; risk-reducing only) -----------------------------
+    def pause(self) -> None:
+        self.discipline.pause()
+        self.persist_discipline()
+
+    def resume(self) -> str:
+        res = self.discipline.resume(self.now_ms(), self.drawdown(), self.cfg.risk.dd_halt_at)
+        self.persist_discipline()
+        return res
+
+    async def close(self, symbol: str | None) -> str:
+        if self.live is None:
+            return "no executor"
+        return await (
+            self.live.close_all("manual")
+            if symbol is None
+            else self.live.close(symbol.upper(), "manual")
+        )
+
+    async def kill(self, reason: str) -> None:
+        if self.live is not None:
+            await self.live.kill(reason)
+        else:
+            self.discipline.kill(self.now_ms())
+            self.persist_discipline()
+
+    def apply_effective(self, cfg: AppConfig, note: str) -> None:
+        self.cfg = cfg
+        self.config_mgr.effective = cfg
+        self.engine.cfg = self.scanner.cfg = cfg
+        self.discipline.cfg = cfg.discipline
+        self.account.cfg = cfg.risk
+        self.lifecycle.cfg = cfg.ledger
+        kv_set(self.db, self.env, "overrides", self.overrides)
+        kv_set(self.db, self.env, "risk_scale", self.risk_scale)
+        record_config_version(self.db, cfg.hash, cfg.canonical(), note)
+
+    async def _on_halt(self, why: str) -> None:
+        await self.sync_transfers()  # a transfer out must never look like a drawdown
+        if self.account.snapshot().dd_step < 0 and not self.discipline.state.halted:
+            await self.kill(why)
+
+    # ---- account / user stream ----------------------------------------------------------------
+    async def refresh_account(self) -> None:
+        if self.gateway is None:
+            return
+        acct = await self.gateway.account()
+        open_risk = sum(r.f for r in self.live.open_risks()) if self.live else 0.0
+        await self.account.update(float(acct["totalMarginBalance"]), self.now_ms(), open_risk)
+
+    async def sync_transfers(self) -> None:
+        if self.gateway is None:
+            return
+        now = self.now_ms()
+        rows = await self.gateway.income("TRANSFER", now - 7 * 86_400_000, now)
+        if self.account.apply_transfers(rows):
+            await self.refresh_account()
+
+    async def _on_user_event(self, msg: dict[str, Any]) -> None:
+        if msg.get("e") == "ACCOUNT_UPDATE" and msg["a"].get("m") in ("WITHDRAW", "DEPOSIT"):
+            self._fire(self.sync_transfers())
+        if self.live is not None:
+            await self.live.on_user_event(msg)
+
+    async def _on_uds_reconnect(self) -> None:
+        if self.live is not None:
+            await self.live.reconcile()
+
+    async def reconcile_once(self) -> None:
+        if self.live is not None:
+            notes = await self.live.reconcile()
+            for n in notes:
+                if "orphan" in n or "missing SL" in n:
+                    await self.notify("risk", f"reconcile: {n}")
+
+    async def watch_config(self) -> None:
+        """Pre-commitment: file edits become immediate decreases or 24 h-queued increases."""
+        try:
+            desired = apply_leaves(load_config(self.config_path), self.overrides)
+        except Exception as e:
+            log.warning("config_invalid", error=repr(e))
+            return
+        dd = self.drawdown()
+        events: list[ChangeEvent] = self.config_mgr.propose(desired, self.now_ms(), dd)
+        events += self.config_mgr.tick(self.now_ms(), dd)
+        kv_set(
+            self.db,
+            self.env,
+            "config_pending",
+            [p.__dict__ for p in self.config_mgr.pending.values()],
+        )
+        for ev in events:
+            if ev.kind == "applied":
+                self.apply_effective(self.config_mgr.effective, f"applied {list(ev.paths)}")
+            self.journal.risk_event(f"config_{ev.kind}", paths=ev.paths, reason=ev.reason)
+            await self.notify(
+                "config", f"config {ev.kind}: {ev.paths} ({ev.reason}) → effective {self.cfg.hash}"
+            )
 
     # ---- loops -----------------------------------------------------------------------------
     async def _every(
@@ -267,9 +468,28 @@ class Bot:
         await self.rest.sync_time()
         await self.refresh_meta()
         await self.hub.start()
+        if self.gateway is not None:
+            await self.refresh_account()
+            await self.sync_transfers()
         await self.scan_once()
+        if self.uds is not None:
+            await self.uds.start()
         if self.executor:
             await self.executor.start()
+        ex = self.cfg.execution
+        if self.gateway is not None:
+            self._spawn(self._every(10, self.refresh_account, "account", 10), "account")
+            self._spawn(self._every(300, self.sync_transfers, "transfers", 300), "transfers")
+            self._spawn(
+                self._every(
+                    ex.reconcile_interval_s,
+                    self.reconcile_once,
+                    "reconcile",
+                    ex.reconcile_interval_s,
+                ),
+                "reconcile",
+            )
+        self._spawn(self._every(60, self.watch_config, "config", 60), "config")
         u, lg = self.cfg.universe, self.cfg.ledger
         self._spawn(
             self._every(u.scan_interval_s, self.scan_once, "scan", u.scan_interval_s), "scan"
@@ -287,6 +507,8 @@ class Bot:
         self.stopping.set()
         if self.executor:
             await self.executor.stop()
+        if self.uds is not None:
+            await self.uds.stop()
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -309,4 +531,10 @@ class Bot:
             "open_sim_trades": len(self.engine.open),
             "clock_drift_ms": round(self.rest.clock.drift_ms),
             "rate_headroom": round(self.rest.limiter.headroom(), 3),
+            "equity": round(self.account.equity, 2),
+            "drawdown": round(self.account.snapshot().drawdown, 4),
+            "positions": list(self.live.positions) if self.live else [],
+            "halted": self.discipline.state.halted,
+            "paused": self.discipline.state.manual_pause,
+            "uds": bool(self.uds and self.uds.connected),
         }

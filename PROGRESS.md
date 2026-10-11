@@ -33,12 +33,16 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 | 2 Market data (routed sharded WS), tick recorder, bar builder, table scanner | ✅ done | 50 passed (48 unit + 2 DEMO integration) |
 | 3 Strategies A/B/C + BASELINE, regime, fill simulator, engine, replay, ledger stats + BH | ✅ done | 81 passed (79 unit + 2 DEMO integration) |
 | 4 SHADOW runner, game lifecycle, persistence, research loop, `run` command | ✅ done | 98 passed (96 unit + 2 DEMO integration) |
+| 5 Sizing, derived leverage, caps, discipline §7, executor, UDS, reconciliation, PROBE on DEMO | ✅ done | 147 passed (144 unit + 3 DEMO integration) |
 
 ## Integration tests (skip if no DEMO keys)
 - tests/integration/test_demo_metadata.py — time sync, exchangeInfo, brackets, fees (read-only)
 
 ## Integration tests also
 - tests/integration/test_demo_streams.py — routed WS delivers all 4 event kinds (read-only)
+- tests/integration/test_demo_probe_trade.py — REAL DEMO order flow: PROBE entry → SL
+  (STOP_MARKET closePosition MARK_PRICE) + 2 TPs via algoOrder → make-before-break SL move →
+  close → PROBE trade row + notifications; safety net flattens BTCUSDT on DEMO afterwards
 
 ## Design decisions / approximations (not risk-changing)
 - Table score = best move_to_cost over the (timeframe, entry) pairs that enabled games use;
@@ -86,6 +90,31 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 - `python -m advantage_player run` smoke test on DEMO (3 min): routed WS healthy, ~25k events,
   research 5768 trades / 52 games / 0 pass.
 
+## Phase 5 notes
+- DEMO-verified order facts: -4120 (conditional on /order), -5022 (GTX would cross), -4046
+  (margin type already set), -2022 (reduce-only w/o position), **-4130: only ONE closePosition
+  STOP per direction** → SL moves are make-before-break: reduce-only qty SL at new level →
+  cancel old → new closePosition SL → cancel temp (never unprotected). Intentional cancels are
+  tracked so the "SL lost → restore" handler doesn't fire on them.
+- UDS: `<ws>/private/ws/<listenKey>`; events ORDER_TRADE_UPDATE, ACCOUNT_UPDATE, ALGO_UPDATE
+  (o.caid/aid/X/tp/cp), TRADE_LITE, ACCOUNT_CONFIG_UPDATE, listenKeyExpired. Keepalive 30 min.
+- DEMO MARKET RESULT can return avgPrice 0 → fall back to GET order / positionRisk entryPrice.
+- Finalize from authoritative /fapi/v1/userTrades since signal + FUNDING_FEE income; 1R =
+  qty × |planned entry − initial stop|; R net of commissions and funding.
+- Kelly input = (μ_low, E[R²]) of real PROBE+LIVE trades since the game last entered PROBE.
+- Stop-out lock applies to stop / BE-stop / trail-stop exits (conservative reading).
+- Caps shrink f to the remaining room (never exceed); PROBE size bumps to minNotional only if
+  that risk stays ≤ max_risk_per_trade.
+- Orphan position (not ours) without SL → flatten + alert; with an SL → left alone + alert.
+  ⚠️ Don't trade manually on the bot's account.
+- Transfers out (income TRANSFER, by tranId) lower peak / start-of-day so sweeps never look like
+  drawdown; checked again right before any hard kill.
+- Config pre-commitment: file is polled every 60 s; Telegram/dashboard lowers are stored as
+  overrides on top of the file (removing one would be a queued increase).
+- ⚠️ DECISION FOR USER (SPEC ambiguity, risk-relevant): after a 10 % hard kill, /resume (≥ 12 h)
+  does NOT reset the equity peak, so entries stay blocked while drawdown ≥ 10 %. Chosen as the
+  safest reading; alternative would be re-baselining the peak on resume.
+
 ## Open issues
 - Second-TF games (A@15s, B@5s/15s) can only leave RESEARCH via tick replay of recorded
   Parquet; `replay_ticks` exists but the daily research loop only uses klines so far.
@@ -97,6 +126,6 @@ After final summary is written here and committed: stop any background processes
 (dev servers, bots, watchers), then run `pmset sleepnow`.
 
 ## Next step
-Phase 5: bankroll/sizing (fractional Kelly on μ_low, dd multiplier, caps), derived leverage +
-liquidation guard, discipline rules §7 (each with a unit test), executor (algoOrder SL/TP,
-maker-first entry), user data stream, reconciliation, PROBE trade on DEMO.
+Phase 6: Telegram (async, throttled, chat-id gated): alerts, debounced table changes, daily
+report 00:00 UTC (+ Bangkok time) with rake vs gross, commands /status /pnl /ledger /tables
+/pause /resume /close /kill /risk (lower-only).

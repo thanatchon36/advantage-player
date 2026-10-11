@@ -186,6 +186,32 @@ class Lifecycle:
         )
         return st, rows
 
+    def real_stats(self, game_id: str) -> tuple[float, float]:
+        """(μ_low, E[R²]) from real PROBE+LIVE trades of this env — Kelly's input for LIVE."""
+        with Session(self.db) as s:
+            probe_since = s.scalars(
+                select(GameTransitionRow.ts)
+                .where(
+                    GameTransitionRow.env == self.env,
+                    GameTransitionRow.game_id == game_id,
+                    GameTransitionRow.to_status == GameStatus.PROBE.value,
+                )
+                .order_by(GameTransitionRow.id.desc())
+                .limit(1)
+            ).first()
+            if probe_since is None:
+                return -math.inf, 0.0
+            rows = s.scalars(
+                select(TradeRow.r_net).where(
+                    TradeRow.env == self.env,
+                    TradeRow.game_id == game_id,
+                    TradeRow.stage.in_(("PROBE", "LIVE")),
+                    TradeRow.entry_ts >= probe_since,
+                )
+            ).all()
+        st = compute_stats(list(rows), conf=self.cfg.confidence, n_boot=self.cfg.bootstrap_samples)
+        return st.mu_low, st.e_r2
+
     # ---- evaluation ------------------------------------------------------------------------
     def apply_research(self, passed_game_ids: Iterable[str], now: datetime) -> list[Transition]:
         out = []
