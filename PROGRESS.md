@@ -139,6 +139,20 @@ After final summary is written here and committed: stop any background processes
 (dev servers, bots, watchers), then run `pmset sleepnow`.
 
 ## Next step
-Phase 7: Dashboard (FastAPI + WebSocket push, password auth, localhost bind, single page with
-lightweight-charts): header, Casino Floor, Edge Ledger, Bankroll, Live, Behavior, Discipline
-log, risk-reducing controls with confirm dialog, CSV export.
+Phase 7 IN PROGRESS (stopped: usage limit). Done so far: deps fastapi/uvicorn/python-multipart
+added (uncommitted code: none). Planned design:
+- Dashboard reads ONLY the DB (works in-process or as separate compose service).
+- Bot publishes kv "live_snapshot" (status, positions incl. liq, scan rows) every 5 s and
+  kv "bars:<SYMBOL>" (last 200 1m bars) on each 1m close for open tables/positions.
+- Controls: new table control_requests (id, ts, action, args, status, result); dashboard POST
+  enqueues; bot polls every 2 s and runs them via risk.controls.Controls (reduce-only).
+- Files: dashboard/backend.py (queries via reports.py + kv), dashboard/server.py (FastAPI:
+  cookie login w/ HMAC token, /api/snapshot|ledger|game/{id}|bankroll|behavior|discipline|
+  chart/{sym}|control, /api/export/{kind}.csv, WS /ws push every 2 s; refuse to start without
+  DASHBOARD_PASSWORD; bind DASHBOARD_HOST), dashboard/static/index.html (lightweight-charts
+  pinned version from unpkg, Bangkok time display, confirm dialogs).
+- CLI: `dashboard` command and `run --dashboard`. Tests with fastapi TestClient.
+Then Phase 8: Dockerfile + docker-compose (bot, dashboard, postgres), README (setup, demo key
+creation, API permissions: futures ON, withdrawals OFF, IP whitelist, universal transfer only if
+auto-sweep; keep most capital outside futures wallet; go-live checklist + gate), final summary,
+then stop background processes and run `pmset sleepnow` (user instruction).

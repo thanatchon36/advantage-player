@@ -16,6 +16,9 @@ dependencies = [
     "pyarrow>=16",
     "pyyaml>=6",
     "uvloop>=0.19; sys_platform == 'linux'",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]
