@@ -31,6 +31,7 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 |---|---|---|
 | 1 Skeleton, config, signed client, metadata, time sync | ✅ done | 29 passed (28 unit + 1 DEMO integration) |
 | 2 Market data (routed sharded WS), tick recorder, bar builder, table scanner | ✅ done | 50 passed (48 unit + 2 DEMO integration) |
+| 3 Strategies A/B/C + BASELINE, regime, fill simulator, engine, replay, ledger stats + BH | ✅ done | 81 passed (79 unit + 2 DEMO integration) |
 
 ## Integration tests (skip if no DEMO keys)
 - tests/integration/test_demo_metadata.py — time sync, exchangeInfo, brackets, fees (read-only)
@@ -48,6 +49,22 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 - First DEMO scan (2026-10-11): 455 candidates ≥ $50M vol, 0 eligible (funding / tick / move_to_cost).
   "No edge → no bet" applies to tables too; SHADOW games can use watchlist data.
 
+## Phase 3 notes
+- Game id = `strategy|symbol|tf|regime`; BASELINE_X shadows each strategy per (symbol, tf),
+  matching its observed signal rate (Beta(1,49) prior), stop distances (ATR units), targets,
+  BE/trail and time stop; maker entries for B's baseline. Baselines are never promoted.
+- Regime: WARMUP until EMA50 seeded AND ≥ 50 realized-vol samples (rv window 20 bars, sampled
+  every 20 bars, 30-day history). Practical warm-up: 5s ≈ 1.4 h, 15s ≈ 4 h, 1m ≈ 17 h,
+  5m ≈ 3.5 d → Phase 4 backfills 1m/5m from REST klines at startup.
+- Fill sim: maker fills only on trade-through; market = half-spread + 1 bp impact; stop fills
+  at stop level or the gap price (first price of the range); stop beats target in the same
+  range; 1R = |planned entry − initial stop|; R net of fees, slippage (entry + exits), funding.
+- fee_share = Σfees / Σgross R (1.0 if gross ≤ 0 — treated as "fees ate everything").
+- μ_low: bootstrap (n ≥ 20) else Student-t; p: one-sided t-test; Δ-vs-baseline: bootstrap
+  (both n ≥ 20) else Welch; BH q = 0.10 across non-baseline games in the same window.
+- `python -m advantage_player research --days 14 BTCUSDT ETHUSDT SOLUSDT` on DEMO klines:
+  288 trades, 12 games, 0 PASS (C on BTC ≈ −3 R OOS: tiny VWAP targets vs fees).
+
 ## Open issues
 - None blocking.
 
@@ -56,5 +73,6 @@ After final summary is written here and committed: stop any background processes
 (dev servers, bots, watchers), then run `pmset sleepnow`.
 
 ## Next step
-Phase 3: strategy modules A/B/C + BASELINE, regime classifier, replay engine (Parquet ticks),
-edge-ledger stats (bootstrap μ_low, t fallback, p-value, Δ vs baseline, BH q=0.10).
+Phase 4: SHADOW runner (live hub → engine in tick mode), trades/signals/games persistence,
+game lifecycle RESEARCH → SHADOW → PROBE → LIVE → SUSPENDED (→ SHADOW), CUSUM / rolling-100 /
+slippage / fee-share suspension, kline backfill for warm-up, `run` command.

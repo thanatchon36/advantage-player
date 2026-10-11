@@ -144,6 +144,60 @@ async def cmd_stream(config_path: str, seconds: int, symbols: list[str]) -> int:
     return 0
 
 
+async def cmd_research(config_path: str, symbols: list[str], days: int) -> int:
+    """RESEARCH: replay REST kline history (bar mode), walk-forward OOS, BH across games."""
+    import time as _time
+
+    from advantage_player.sim.engine import GameEngine
+    from advantage_player.sim.fills import Costs, TradeResult
+    from advantage_player.sim.replay import evaluate, fetch_klines, replay_bars
+
+    secrets = Secrets()
+    secrets.check_mode()
+    cfg = load_config(config_path)
+    ep = ENDPOINTS[secrets.binance_env]
+    rest = BinanceRest(ep.rest, secrets.api_key, secrets.api_secret)
+    end = int(_time.time() * 1000)
+    start = end - days * 86_400_000
+    results: list[TradeResult] = []
+    try:
+        meta = ExchangeMetadata(rest)
+        if secrets.has_keys:
+            await meta.refresh_fees(symbols)
+        for sym in symbols:
+            fees = meta.fees.get(sym)
+            costs = Costs(
+                maker_fee=fees.maker if fees else 0.0002,
+                taker_fee=fees.taker if fees else 0.0005,
+                slippage_bps=cfg.universe.slippage_model_bps,
+            )
+
+            def costs_of(_s: str, c: Costs = costs) -> Costs:
+                return c
+
+            eng = GameEngine(cfg, costs_of, bar_mode=True)
+            eng.result_hooks.append(results.append)
+            bars = []
+            for tf in sorted(t for t in eng.timeframes if t.endswith("m")):
+                bars += await fetch_klines(rest, sym, tf, start, end)
+            replay_bars(eng, bars)
+            print(f"{sym}: {len(bars)} bars replayed")
+    finally:
+        await rest.aclose()
+    split = start + int((end - start) * cfg.ledger.walk_forward_train_frac)
+    evs = evaluate(results, split, cfg.ledger.bh_q, cfg.ledger.confidence)
+    print(f"trades: {len(results)}  games: {len(evs)}  (OOS from {split})")
+    print(f"{'game':<34}{'n_oos':>6}{'μ':>8}{'μ_low':>8}{'p':>8}{'Δlow':>8}  BH  PASS")
+    for e in sorted(evs, key=lambda e: e.oos.p_value):
+        o = e.oos
+        dl = f"{o.delta_low:8.3f}" if o.delta_low is not None else "     n/a"
+        print(
+            f"{e.game_id:<34}{o.n:>6}{o.mean:>8.3f}{o.mu_low:>8.3f}{o.p_value:>8.3f}{dl}"
+            f"  {'Y' if e.bh_significant else '-'}   {'Y' if e.passed else '-'}"
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="advantage_player")
     p.add_argument("--config", default="config.yaml")
@@ -154,6 +208,9 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("stream", help="stream + record market data for N seconds")
     sp.add_argument("--seconds", type=int, default=30)
     sp.add_argument("symbols", nargs="*", default=["BTCUSDT", "ETHUSDT"])
+    rp = sub.add_parser("research", help="kline replay + walk-forward + BH (RESEARCH)")
+    rp.add_argument("--days", type=int, default=14)
+    rp.add_argument("symbols", nargs="*", default=["BTCUSDT", "ETHUSDT"])
     args = p.parse_args(argv)
     setup_logging(args.log_level)
     if args.cmd == "info":
@@ -162,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(cmd_scan(args.config))
     if args.cmd == "stream":
         return asyncio.run(cmd_stream(args.config, args.seconds, args.symbols))
+    if args.cmd == "research":
+        return asyncio.run(cmd_research(args.config, args.symbols, args.days))
     return 1
 
 
