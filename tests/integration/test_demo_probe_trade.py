@@ -21,6 +21,7 @@ from advantage_player.execution.userstream import UserStream
 from advantage_player.ledger.journal import Journal
 from advantage_player.ledger.lifecycle import GameStatus
 from advantage_player.marketdata.events import BookTicker
+from advantage_player.notify.telegram import TelegramNotifier
 from advantage_player.risk.discipline import Discipline
 from advantage_player.sim.engine import SignalEvent
 from advantage_player.sim.fills import Costs
@@ -45,6 +46,7 @@ class Ctx:
         self.equity = 0.0
         self.bt: BookTicker | None = None
         self.mark_px: float | None = None
+        self.tg: TelegramNotifier | None = None
 
     def now_ms(self) -> int:
         return self.rest.clock.now_ms()
@@ -78,6 +80,8 @@ class Ctx:
 
     async def notify(self, kind: str, text: str) -> None:
         self.notes.append((kind, text))
+        if self.tg is not None:
+            self.tg.notify(kind, f"[DEMO itest] {text}")
 
     async def edge_check(self, game_ids: list[str]) -> None: ...
 
@@ -116,6 +120,10 @@ async def test_demo_probe_trade_end_to_end(demo_secrets: Secrets, tmp_path: Path
         await meta.refresh_exchange_info()
         await meta.refresh_brackets()
         ctx = Ctx(rest, meta, tmp_path / "t.db")
+        tok = demo_secrets.telegram_bot_token.get_secret_value()
+        if tok and demo_secrets.telegram_chat_id:
+            ctx.tg = TelegramNotifier(tok, demo_secrets.telegram_chat_id, min_interval_s=1.0)
+            await ctx.tg.start(poll_commands=False)
         ctx.equity = float((await gw.account())["totalMarginBalance"])
         await ctx.refresh_book()
         assert ctx.bt is not None
@@ -176,6 +184,10 @@ async def test_demo_probe_trade_end_to_end(demo_secrets: Secrets, tmp_path: Path
         assert [x.decision for x in sigs] == ["BET"]
         kinds = [k for k, _ in ctx.notes]
         assert "open" in kinds and "close" in kinds
+        if ctx.tg is not None:  # Telegram actually delivered (sendMessage ok)
+            await ctx.tg.stop(flush_s=15)
+            sent = "\n".join(ctx.tg.sent)
+            assert "OPEN BTCUSDT" in sent and "CLOSE BTCUSDT" in sent
     finally:
         if uds:
             await uds.stop()

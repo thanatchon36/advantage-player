@@ -34,6 +34,7 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 | 3 Strategies A/B/C + BASELINE, regime, fill simulator, engine, replay, ledger stats + BH | ✅ done | 81 passed (79 unit + 2 DEMO integration) |
 | 4 SHADOW runner, game lifecycle, persistence, research loop, `run` command | ✅ done | 98 passed (96 unit + 2 DEMO integration) |
 | 5 Sizing, derived leverage, caps, discipline §7, executor, UDS, reconciliation, PROBE on DEMO | ✅ done | 147 passed (144 unit + 3 DEMO integration) |
+| 6 Telegram: throttled non-blocking alerts, debounced tables, daily report, chat-gated commands | ✅ done | 155 passed (152 unit + 3 DEMO integration) |
 
 ## Integration tests (skip if no DEMO keys)
 - tests/integration/test_demo_metadata.py — time sync, exchangeInfo, brackets, fees (read-only)
@@ -42,7 +43,8 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
 - tests/integration/test_demo_streams.py — routed WS delivers all 4 event kinds (read-only)
 - tests/integration/test_demo_probe_trade.py — REAL DEMO order flow: PROBE entry → SL
   (STOP_MARKET closePosition MARK_PRICE) + 2 TPs via algoOrder → make-before-break SL move →
-  close → PROBE trade row + notifications; safety net flattens BTCUSDT on DEMO afterwards
+  close → PROBE trade row + notifications; safety net flattens BTCUSDT on DEMO afterwards.
+  If TELEGRAM_* is set it also delivers the OPEN/CLOSE alerts to the group (real sendMessage).
 
 ## Design decisions / approximations (not risk-changing)
 - Table score = best move_to_cost over the (timeframe, entry) pairs that enabled games use;
@@ -115,6 +117,17 @@ Mode: DEMO only. Phases 2–8 run back-to-back (user instruction overrides SPEC 
   does NOT reset the equity peak, so entries stay blocked while drawdown ≥ 10 %. Chosen as the
   safest reading; alternative would be re-baselining the peak on resume.
 
+## Phase 6 notes
+- Bot @claude_code_crypto_dryrun_bot, group chat type `group`; privacy mode on (commands still
+  delivered). Commands accepted only from TELEGRAM_CHAT_ID; others ignored + counted.
+- notify() is enqueue-only (bounded 200, oldest dropped); sender ≥ 3 s apart, backlog
+  coalesced, 429 retry_after honoured. Table changes: one message per 30 min (latest wins).
+- Daily report at 00:00 UTC for the finished UTC day, shown with Bangkok time: equity, net,
+  gross, rake (fees + funding paid), trades per game, ledger transitions, NO_BET by reason.
+- Alerts: start/stop (+config hash), open/close (size, entry, L, SL, TP, liq, f%, R, $, fees),
+  game transitions, table changes, SL failure / orphan / kill / DD step / config
+  queued-applied-rejected, connectivity down/restored, sweep suggestions.
+
 ## Open issues
 - Second-TF games (A@15s, B@5s/15s) can only leave RESEARCH via tick replay of recorded
   Parquet; `replay_ticks` exists but the daily research loop only uses klines so far.
@@ -126,6 +139,6 @@ After final summary is written here and committed: stop any background processes
 (dev servers, bots, watchers), then run `pmset sleepnow`.
 
 ## Next step
-Phase 6: Telegram (async, throttled, chat-id gated): alerts, debounced table changes, daily
-report 00:00 UTC (+ Bangkok time) with rake vs gross, commands /status /pnl /ledger /tables
-/pause /resume /close /kill /risk (lower-only).
+Phase 7: Dashboard (FastAPI + WebSocket push, password auth, localhost bind, single page with
+lightweight-charts): header, Casino Floor, Edge Ledger, Bankroll, Live, Behavior, Discipline
+log, risk-reducing controls with confirm dialog, CSV export.

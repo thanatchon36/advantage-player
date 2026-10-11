@@ -10,11 +10,12 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import structlog
 
+from advantage_player import reports
 from advantage_player.config.changes import ChangeEvent, ConfigManager, Pending, apply_leaves
 from advantage_player.config.settings import AppConfig, Secrets, load_config
 from advantage_player.exchange.endpoints import ENDPOINTS
@@ -30,6 +31,8 @@ from advantage_player.marketdata.bars import Bar
 from advantage_player.marketdata.events import BookTicker, MarketEvent, MarkPrice
 from advantage_player.marketdata.hub import MarketDataHub
 from advantage_player.marketdata.recorder import TickRecorder
+from advantage_player.notify.commands import build_commands
+from advantage_player.notify.telegram import TelegramNotifier
 from advantage_player.risk.controls import Controls
 from advantage_player.risk.discipline import Discipline, DisciplineState, entry_blockers
 from advantage_player.scanner.persist import save_scan
@@ -111,9 +114,18 @@ class Bot:
         self.account.on_halt = self._on_halt
         self.controls = Controls(self, lambda m: self.notify("control", m))
         self._last_funding: dict[str, int] = {}
+        self._conn_ok = True
         self.gateway: Gateway | None = None
         self.live: LiveExecutor | None = None
         self.uds: UserStream | None = None
+        self.telegram: TelegramNotifier | None = None
+        tok = secrets.telegram_bot_token.get_secret_value()
+        if tok and secrets.telegram_chat_id:
+            self.telegram = TelegramNotifier(
+                tok, secrets.telegram_chat_id, debounce_s=cfg.universe.table_change_debounce_s
+            )
+            self.notifiers.append(self.telegram.notify)
+            self.telegram.commands = build_commands(self)
         if secrets.has_keys:
             self.gateway = Gateway(self.rest)
             self.live = LiveExecutor(self, self.gateway, self.env)
@@ -462,9 +474,50 @@ class Bot:
     async def sync_clock(self) -> None:
         await self.rest.sync_time()
 
+    async def _daily_report_loop(self) -> None:
+        """Daily report at 00:00 UTC for the UTC day that just ended (Bangkok time shown)."""
+        while not self.stopping.is_set():
+            now = datetime.now(UTC)
+            nxt = reports.day_bounds(now)[1]
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self.stopping.wait(), timeout=(nxt - now).total_seconds() + 1
+                )
+            if self.stopping.is_set():
+                return
+            await self.send_daily_report(nxt - timedelta(days=1))
+
+    async def send_daily_report(self, day: datetime) -> str:
+        snap = self.account.snapshot()
+        text = reports.daily_report_text(
+            self.db, self.env, self.banner, day, snap.equity, snap.drawdown
+        )
+        if self.telegram is not None:
+            self.telegram.notify("report", text)
+        log.info("daily_report", day=f"{day:%Y-%m-%d}")
+        return text
+
+    async def check_connectivity(self) -> None:
+        ws_ok = self.hub.streams.healthy
+        uds_ok = self.uds is None or self.uds.connected
+        ok = ws_ok and uds_ok
+        if ok != self._conn_ok:
+            self._conn_ok = ok
+            if ok:
+                await self.notify("conn", "connectivity restored")
+            else:
+                await self.notify(
+                    "conn",
+                    f"⚠️ connectivity problem: market WS "
+                    f"{'ok' if ws_ok else 'DOWN'}, user stream "
+                    f"{'ok' if uds_ok else 'DOWN'} (entries blocked)",
+                )
+
     # ---- run -------------------------------------------------------------------------------
     async def start(self) -> None:
         log.info("bot_start", mode=self.banner, config=self.cfg.hash, rest=self.ep.rest)
+        if self.telegram is not None:
+            await self.telegram.start()
         await self.rest.sync_time()
         await self.refresh_meta()
         await self.hub.start()
@@ -490,6 +543,8 @@ class Bot:
                 "reconcile",
             )
         self._spawn(self._every(60, self.watch_config, "config", 60), "config")
+        self._spawn(self._daily_report_loop(), "daily-report")
+        self._spawn(self._every(15, self.check_connectivity, "connectivity", 30), "connectivity")
         u, lg = self.cfg.universe, self.cfg.ledger
         self._spawn(
             self._every(u.scan_interval_s, self.scan_once, "scan", u.scan_interval_s), "scan"
@@ -513,7 +568,9 @@ class Bot:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         await self.hub.stop()
-        await self.notify("stop", "bot stopped")
+        await self.notify("stop", f"bot stopped, config {self.cfg.hash}")
+        if self.telegram is not None:
+            await self.telegram.stop()
         await self.rest.aclose()
 
     def status(self) -> dict[str, Any]:
