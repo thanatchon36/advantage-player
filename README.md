@@ -1,5 +1,12 @@
 # Advantage Player
 
+[![CI](https://github.com/thanatchon36/advantage-player/actions/workflows/ci.yml/badge.svg)](https://github.com/thanatchon36/advantage-player/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+[![Checked with mypy](https://img.shields.io/badge/mypy-strict-2a6db2)](https://mypy-lang.org/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 An async Binance USDⓈ-M perpetual-futures bot built to act like an advantage player rather than a casino patron:
 it bets only when an edge is **proven** net of all costs, sizes bets with **fractional Kelly** on a conservative edge
 estimate, chooses its tables, records every decision (including every decision *not* to bet), and follows
@@ -208,3 +215,21 @@ Live trading stays off until **every** box is ticked.
 - [ ] Set `BINANCE_ENV=live`, `BINANCE_LIVE_API_KEY/SECRET` and `LIVE_TRADING_CONFIRMED=true` (live refuses to
       start without it).
 - [ ] Watch the first PROBE trades end to end: entry, SL confirmed within 2 s, TP, close, ledger row, Telegram alert.
+
+---
+
+## 7. Roadmap
+
+Open work is tracked in [issues](https://github.com/thanatchon36/advantage-player/issues), grouped under the
+[DEMO go-live gate](https://github.com/thanatchon36/advantage-player/milestones) milestone:
+
+- Run DEMO for ≥ 2 weeks with zero unprotected-position or discipline incidents, and get one game through PROBE.
+- Settle the two risk-relevant open decisions in `PROGRESS.md` (equity peak on `/resume`, `Lifecycle.seed_from`).
+- Research gaps: tick replay for second-timeframe games, hysteresis against table flapping.
+
+## License and disclaimer
+
+[MIT](LICENSE). This is research software, provided as is and with no warranty. It is not financial advice, and
+the authors are not responsible for any loss from running it. Live trading is off unless you deliberately switch it
+on. Report anything that could leak keys or place unintended orders privately, as described in
+[SECURITY.md](SECURITY.md).

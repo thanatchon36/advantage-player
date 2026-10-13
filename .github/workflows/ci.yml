@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ap
+          POSTGRES_PASSWORD: ap
+          POSTGRES_DB: ap
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ap" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # DEMO integration tests place real orders; never run them in CI.
+      AP_SKIP_INTEGRATION: "1"
+      AP_TEST_PG_URL: postgresql+psycopg://ap:ap@127.0.0.1:5432/ap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: ruff
+        run: uv run ruff check .
+      - name: mypy (strict)
+        run: uv run mypy src tests
+      - name: pytest (unit + Postgres storage)
+        run: uv run pytest -q
