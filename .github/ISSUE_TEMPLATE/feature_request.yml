@@ -1,0 +1,25 @@
+name: Feature / spec change
+description: Propose a new game, a capability or a change to a SPEC rule
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing or wrong today, with evidence (edge ledger stats, R-multiples, risk_events) if you have it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: For a new game, state the hypothesis and its BASELINE control.
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Risk impact
+      description: Can this increase size, leverage, open risk or loss? Which SPEC §6 cap or §7 discipline rule bounds it?
+    validations:
+      required: true

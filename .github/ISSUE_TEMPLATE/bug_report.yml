@@ -1,0 +1,32 @@
+name: Bug report
+description: Something behaves wrong in research, shadow, DEMO or live
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "**Never paste API keys, secrets, Telegram tokens or account IDs.** Redact log lines before posting."
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [tests / research replay, SHADOW, DEMO (PROBE/LIVE games), live]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Observed vs expected. Include the game id (strategy|symbol|tf|regime) and stage, and any risk_events row.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines
+      description: The relevant structlog lines (UTC timestamps).
+      render: json
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      placeholder: git rev-parse --short HEAD
