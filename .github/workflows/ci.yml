@@ -32,7 +32,7 @@ jobs:
       AP_TEST_PG_URL: postgresql+psycopg://ap:ap@127.0.0.1:5432/ap
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - run: uv sync --locked
